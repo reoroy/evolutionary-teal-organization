@@ -3,7 +3,7 @@ type: overview
 title: Evolutionary-Teal Organization (ETO)
 description: 多 Agent 青色组织架构——用 Dynamic Workflows 模拟青色组织，让 Agent 像生命系统一样自主协作
 tags: [multi-agent, teal-organization, orchestration, evolution, self-management]
-timestamp: 2026-06-20
+timestamp: 2026-06-25
 resource: https://github.com/reoroy/evolutionary-teal-organization
 ---
 
