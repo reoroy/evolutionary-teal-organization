@@ -1,0 +1,20 @@
+# ETO 配置模板 — 复制到 ~/.config/eto/config.yaml
+# cp config.yaml.example ~/.config/eto/config.yaml
+
+# ── Wiki 知识库 ──────────────────────────────────────────
+wiki:
+  global: ~/.eto/wiki       # 全局知识库（所有项目共享）
+  local: .eto/wiki           # 项目知识库（当前目录下）
+
+# ── Agent 默认值 ─────────────────────────────────────────
+agents:
+  default_provider: ollama   # 默认 LLM 后端
+  default_model: qwen2.5-coder:7b  # 默认模型
+
+# ── LLM 后端（可选） ─────────────────────────────────────
+# ollama:
+#   host: http://localhost:11434
+#
+# openai:
+#   api_key: <your-key>
+#   base_url: https://api.openai.com/v1
