@@ -16,6 +16,12 @@ AIMemory/
 _archive/
 _archive_src/
 
+# Runtime artifacts
+*.log
+nul
+__pycache__/
+*.pyc
+
 # Cloned stitch repos (external)
 eto/stitches/maestro/
 eto/stitches/protolink/

@@ -62,3 +62,32 @@ bin-link:
 	ln -sf $(PWD)/bin/eto ~/.local/bin/eto
 	@echo "→ bin/eto 已链接到 ~/.local/bin/eto"
 	@echo "   确保 ~/.local/bin 在 PATH 中"
+
+# ── 一键运行 ──────────────────────────────────────────────
+# make run              # TUI 交互式（Ollama 本地模型）
+# make run M=hi         # 一次性 prompt
+# make run-proxy        # TUI 交互式（走代理）
+# make run-proxy M=hi   # 一次性 prompt
+.PHONY: run run-proxy
+
+RUN_CMD = pi -e ./eto/extensions/eto.ts
+RUN_PROVIDER ?= ollama
+RUN_MODEL ?= qwen2.5-coder:7b
+
+# Ollama 模式: Pi + ETO 扩展 + Ollama provider
+# 不传 -p 时进入 TUI 交互模式，传 M= 时做一次性查询
+run:
+ifdef M
+	$(RUN_CMD) --provider $(RUN_PROVIDER) --model $(RUN_MODEL) -p "$(M)"
+else
+	$(RUN_CMD) --provider $(RUN_PROVIDER) --model $(RUN_MODEL)
+endif
+
+# 代理模式: Pi + ETO 扩展 + Anthropic provider → 127.0.0.1:15721
+# 不传 -p 时进入 TUI，传 M= 时做一次性查询
+run-proxy:
+ifdef M
+	ANTHROPIC_BASE_URL=http://127.0.0.1:15721 ANTHROPIC_API_KEY=PROXY_MANAGED $(RUN_CMD) --provider anthropic -p "$(M)"
+else
+	ANTHROPIC_BASE_URL=http://127.0.0.1:15721 ANTHROPIC_API_KEY=PROXY_MANAGED $(RUN_CMD) --provider anthropic
+endif

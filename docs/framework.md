@@ -64,7 +64,7 @@ eto-agent coder --port 5002
 | 智子安检 | `eto/extensions/eto.ts` | ✅ 可用 | 自动，拦截危险 bash |
 | 共识评分 | `eto/stitches/consensus/vote.py` | 🟡 代码写好了，依赖没装 | `pip install votingai` |
 | A2A 通信 | `eto/stitches/comms/a2a.py` | 🟡 代码写好了，依赖没装 | `pip install protolink` |
-| 选举 | `eto/stitches/election/raft_lead.py` | 🟡 代码写好了，源码在 `_archive/` | `pip install ./raft-lite` |
+| 选举 | `eto/stitches/election/elect.py` | ✅ 按匹配度排序选协调员 | 纯 Python，无依赖 |
 
 ### 待安装的依赖
 
@@ -126,7 +126,7 @@ eto/
   stitches/
     comms/a2a.py              A2A 通信层
     consensus/vote.py          共识投票层
-    election/raft_lead.py      选举层
+    election/elect.py          选举层
 
 docs/
   design-spec.md               原始架构设计

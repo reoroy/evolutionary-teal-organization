@@ -23,17 +23,74 @@
 - ❌ 自建记忆系统 — 用 agentmemory / pi-memory
 - ❌ 自建 embedding/路由 — Pi 的 provider 抽象
 
-## AIMemory Protocol (Hermes ↔ Claude Code)
+## Reasonix 文件接力协议（Claude Code ↔ Reasonix）
 
-与 Hermes Agent（运行在本地网络的协调节点）之间的跨 Agent 记忆协议。
+与 Reasonix 通过文件系统接力协作：
+
+| 方向 | 路径 | 用途 |
+|:-----|:------|:------|
+| Claude → Reasonix | `docs/handoffs/reasonix/plan-<任务名>.md` | 计划/实现需求 |
+| Reasonix → Claude | `docs/handoffs/reasonix/completion-<任务名>.md` | 实现回执/改动清单 |
+| 会话状态 | `docs/handoffs/reasonix/INDEX.md` | 双方活跃文件锁 |
+
+**协作流程：**
+1. Claude Code 写 plan → 用户对 Reasonix 说「去看 plan-xxx.md」
+2. Reasonix 读 plan → 写代码 → 写 completion 回执
+3. 用户对 Claude 说「审计」
+4. Claude Code 审计 completion 内容，确认或要求修改
+
+**规则：**
+- 改共享文件前先在 INDEX.md 登记锁
+- 不改对方正在持有的文件
+- 完成回执必须列出改动的文件 + 每处改动的摘要 + 验收证据
+
+## AIMemIndex Protocol (Hermes ↔ Claude Code)
+
+与 Hermes Agent（运行在本地网络的协调节点）之间的跨代理记忆协议。所有协议规则、目录结构和细节见 **AIMemIndex.md**。
+
+### 快速参考
+
+| 方向 | 路径/命令 | 用途 |
+|:-----|:------|:------|
+| AIMemProtocol → Index | `docs/handoffs/reasonix/plan-<任务名>.md` | 实现需求 |
+| Index → AIMemProtocol | `docs/handoffs/reasonix/completion-<任务名>.md` | 实现回执/改动清单 |
+| 活跃索引 | `docs/handoffs/reasonix/INDEX.md` | 双方文件锁状态 |
+
+**协作流程：**
+1. AIMemProtocol 写 plan → 用户对 Reasonix 说「去看计划」
+2. Reasonix 读 plan → 写代码 → 写 completion 回执
+3. 用户审计完成，确认或要求修改
+
+**规则：**
+- 改共享文件前在 INDEX.md 登记锁
+- 不改对方正在持有的文件
+- 完成回执必须列出改动的文件 + 每处改动的摘要
+
+### 安装与配置
 
 **安装（一次）:**
 ```bash
 uv tool install git+https://github.com/AnastasiyaW/mclaude.git
+cd ~/Claude
+source .venv/bin/activate
 ```
 
-**规则:**
-- 会话启动: `mclaude memory core` 加载共享上下文
-- 关键决策: `mclaude memory save`
-- 修改共享文件前: `mclaude lock claim`
-- Agent ID: `claude-code`
+**配置 (`~/.mclaude/config.toml`):**
+```toml
+[agent]
+id = "claude-code"
+name = "Claude Code Agent"
+
+[memory]
+shared_dir = "~/.mclaude/shared"   # 跨代理共享记忆目录
+scope = "local"                     # local / network（网络模式需要额外配置）
+```
+
+### 常用命令速查
+
+**会话生命周期：**
+- **启动/加载:** `mclaude memory core` — 提取当前会话共享状态
+- **保存决策:** `mclaude memory save --scope shared "描述"` — 持久化关键决策
+- **锁定资源:** `mclaude lock claim file <路径>` / `mclaude lock release file <路径>`
+
+**Agent ID:** `claude-code`

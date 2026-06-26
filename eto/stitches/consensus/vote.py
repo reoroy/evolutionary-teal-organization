@@ -40,8 +40,23 @@ def peer_review(plan: str, peers: list[str]) -> dict:
     return {"status": "approved" if avg >= 0.6 else "需调整", "avg_score": avg, "votes": results}
 
 if __name__ == "__main__":
-    data = json.loads(sys.stdin.read())
-    fn = globals().get(data["fn"])
-    if fn:
-        result = fn(*data.get("args", []))
+    try:
+        data = json.loads(sys.stdin.read())
+    except json.JSONDecodeError as e:
+        print(json.dumps({"_error": True, "message": f"JSON 解析失败: {e}"}))
+        sys.exit(0)
+
+    fn = data.get("fn")
+    args = data.get("args", [])
+
+    func = globals().get(fn)
+    if func is None:
+        print(json.dumps({"_error": True, "message": f"未知函数: {fn}"}))
+        sys.exit(0)
+
+    try:
+        result = func(*args)
         print(json.dumps(result, ensure_ascii=False))
+    except Exception as e:
+        print(json.dumps({"_error": True, "message": str(e)}))
+        sys.exit(0)

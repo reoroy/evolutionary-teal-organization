@@ -60,7 +60,7 @@
 eto/stitches/
 ├── comms/a2a.py          → ProtoLink     🧩 已装包待集成 ~47行（当前直调 Ollama）
 ├── consensus/vote.py     → VotingAI      🧩 已装包待集成 ~32行（当前直调 Ollama）
-└── election/raft_lead.py → raft-lite     ❌ 包不存在，自制sort ~14行
+└── election/elect.py     ✅ 简单排序，无外部依赖
 ```
 
 ## 三、待依赖安装

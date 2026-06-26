@@ -100,16 +100,23 @@ async function routeTask(task: string): Promise<RouteResult> {
 //  二、Stitcher — 调 Python 缝合层
 // ═══════════════════════════════════════════════════
 
-/** 查找缝合层目录（兼容 .pi/extensions/ 和 ~/.pi/agent/extensions/ 两种加载路径） */
+/** 查找缝合层目录（兼容 .pi/extensions/ + ~/.pi/agent/extensions/ + process.cwd()） */
 function findStitchesDir(): string {
-  // 优先级: ETO_HOME 环境变量 > 项目内 > ~/.pi/agent/extensions/ 回退
-  if (process.env.ETO_HOME) {
-    const fromEnv = join(process.env.ETO_HOME, "eto", "stitches");
-    if (existsSync(fromEnv)) return fromEnv;
+  const candidates = [
+    // 1. ETO_HOME 环境变量（显式指定）
+    process.env.ETO_HOME && join(process.env.ETO_HOME, "eto", "stitches"),
+    // 2. __dirname 相对（项目内加载）
+    join(__dirname, "..", "..", "eto", "stitches"),
+    // 3. process.cwd()（全局安装后，从项目目录跑 pi）
+    join(process.cwd(), "eto", "stitches"),
+    // 4. __dirname 三级上溯（~/.pi/agent/extensions/ → 回退尝试）
+    join(__dirname, "..", "..", "..", "eto", "stitches"),
+  ];
+  for (const p of candidates) {
+    if (p && existsSync(p)) return p;
   }
-  const inProject = join(__dirname, "..", "..", "eto", "stitches");
-  if (existsSync(inProject)) return inProject;
-  return join(__dirname, "..", "..", "..", "eto", "stitches");
+  console.error("[ETO] 找不到 eto/stitches/ 目录");
+  return "";
 }
 
 const STITCHES_DIR = findStitchesDir();
@@ -134,7 +141,7 @@ function peerConsensus(plan: string, peers: string[]): Record<string, unknown> |
 }
 
 function electCoordinator(candidates: [string, number][]): string {
-  const result = callStitch("election.raft_lead", "elect", candidates);
+  const result = callStitch("election.elect", "elect", candidates);
   if (!result || "_error" in result) return candidates[0]?.[0] || "researcher";
   return (result as Record<string, unknown>)?.leader as string || candidates[0]?.[0] || "researcher";
 }
@@ -177,6 +184,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.notify("🦋 /ETO  —  无序 · 三生 · 有机", "info");
     ctx.ui.notify("架构优于单体 · architecture > agent · Enter /eto", "info");
+    // 预注册 widget（TUI 就绪后立即显示）
+    ctx.ui.setWidget("eto-route", ["📋 ETO 等待中...", "输入任务开始青色组织工作流"]);
   });
 
   pi.registerCommand("eto", {
@@ -195,17 +204,85 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     const task = event.prompt || "";
     if (!task) return;
+
+    // 清除上次路由 widget
+    ctx.ui.setWidget("eto-route", undefined);
+
+    ctx.ui.notify("📋 ETO 分析中...", "info");
     const route = await routeTask(task);
-    const icons: Record<string, string> = { direct: "⚡", plan: "📋", consensus: "🤝" };
-    ctx.ui.notify(`${icons[route.route] || "?"} ETO: ${route.gewu} → ${route.route} [${route.layer}]`, "info");
+
+    const confidence = (route.confidence * 100).toFixed(0);
+    ctx.ui.notify(`🔍 三镜路由: ${route.gewu} → ${route.route}  [${route.layer} ${confidence}%]`, "info");
+    ctx.ui.notify(`👤 协调员: ${route.coordinator}`, "info");
+
+    // 构建 widget（TUI 编辑器上方持久显示）
+    const widgetLines = [
+      `📋 ETO | ${route.gewu} → ${route.route} | ${route.coordinator} | ${route.layer} ${confidence}%`,
+    ];
+
+    // 构建 systemPrompt（注入对话上下文）
+    const routeLines = [
+      `## ETO 路由分析`,
+      `路由: ${route.gewu} → ${route.route} (${route.layer}, ${confidence}%)`,
+      `协调员: ${route.coordinator}`,
+    ];
 
     if (route.route === "plan") {
+      ctx.ui.notify(`📝 生成执行计划...`, "info");
       const plan = await execPlan(task, route);
+      const consensusMatch = plan.match(/共识: (.+?)(?:\n|$)/);
+      const stepMatch = plan.match(/共 (\d+) 步/);
+      const stepsStr = plan.match(/Step \d+ \(([^)]+)\)/g)?.map(s => s.replace(/>> /, "").trim()).join(" → ") || "";
+      ctx.ui.notify(`🤝 共识: ${consensusMatch?.[1] || "通过"}`, "info");
+      ctx.ui.notify(`📝 ${stepMatch?.[1] || "?"} 步计划生成`, "info");
+
+      routeLines.push(`共识: ${consensusMatch?.[1] || "通过"}`);
+      routeLines.push(`计划: ${stepMatch?.[1] || "?"} 步`);
+      routeLines.push("");
+      routeLines.push(`[ETO Plan]\n${plan}`);
+      routeLines.push("");
+      routeLines.push("回复格式要求：");
+      routeLines.push("1. 每完成一步，先输出 >> Step N");
+      routeLines.push("2. 全部完成后，输出：");
+      routeLines.push("====END====");
+      routeLines.push("工作总结：");
+      routeLines.push(`- 目标: ${task}`);
+      routeLines.push(`- 路由: ${route.gewu} → ${route.route}`);
+      routeLines.push(`- 完成步骤: ${stepsStr || stepMatch?.[1] + "步"}`);
+      routeLines.push("- 改动文件: [列出改动的文件]");
+      routeLines.push("- 结果: [总结执行结果]");
+
+      widgetLines.push(`📝 ${stepMatch?.[1] || "?"}步计划 | 共识: ${consensusMatch?.[1] || "通过"}`);
+      ctx.ui.setWidget("eto-route", widgetLines);
+
       return {
-        systemPrompt: (event.systemPrompt || "") + `\n[ETO Plan]\n${plan}\n请按以下步骤执行，每步标注 >> Step N，完成后汇总结果。`,
+        systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || ""),
       };
     }
-    return { systemPrompt: (event.systemPrompt || "") + `\n[ETO] 路由: ${route.gewu} → ${route.route}` };
+
+    if (route.route === "consensus") {
+      ctx.ui.notify(`🤝 需多 Agent 共识审批`, "info");
+      routeLines.push(`注意: 此任务需要共识审批，请在回复中说明风险点和审批结果。`);
+      routeLines.push("");
+      routeLines.push("回复格式：");
+      routeLines.push("【风险点】列出风险");
+      routeLines.push("【建议】处理方案");
+      routeLines.push("====END====");
+      widgetLines.push(`🤝 需共识审批`);
+      ctx.ui.setWidget("eto-route", widgetLines);
+    } else {
+      // direct route
+      routeLines.push("");
+      routeLines.push("回复格式：");
+      routeLines.push("【路由】一句话说明任务归类");
+      routeLines.push("【回答】你的回答");
+      routeLines.push("====END====");
+      ctx.ui.setWidget("eto-route", widgetLines);
+    }
+
+    return {
+      systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || ""),
+    };
   });
 
   pi.registerTool({

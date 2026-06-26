@@ -1,0 +1,5 @@
+[project]
+name = "eto-stitches"
+version = "0.1.0"
+description = "ETO Stitches — 胶水代码层"
+requires-python = ">=3.10"
