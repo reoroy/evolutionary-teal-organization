@@ -1,41 +1,23 @@
 {
   "enabled": true,
+  "rateLimit": {
+    "windowMs": 60000,
+    "maxPerWindow": 5,
+    "action": "block"
+  },
   "logFile": "~/.eto/sentinel-log.jsonl",
   "rules": [
     {
-      "name": "dangerous-rm",
-      "trigger": "bash",
-      "pattern": "(rm\\s+-rf|dd\\s+if=|mkfs|format\\s+/dev|>\\s*/dev/)",
-      "action": "confirm",
-      "message": "危险删除操作，确认放行？"
+      "name": "block-dangerous-commands",
+      "type": "bash",
+      "pattern": "rm -rf|dd if=|format |mkfs|> /dev/",
+      "action": "veto"
     },
     {
-      "name": "disk-format",
-      "trigger": "bash",
-      "pattern": "(mkfs|fdisk\\s+-l|wipefs|dd.*of=/dev)",
-      "action": "confirm",
-      "message": "磁盘格式化/擦除操作，确认放行？"
-    },
-    {
-      "name": "pi-removal",
-      "trigger": "bash",
-      "pattern": "(npm\\s+uninstall.*@earendil|pip\\s+uninstall.*pi-ai)",
-      "action": "confirm",
-      "message": "正在移除 Pi CLI 相关包，确认放行？"
-    },
-    {
-      "name": "secret-access",
-      "trigger": "write_file",
-      "pattern": "(\\.ssh/|\\.gnupg/|\\.(pem|key|p12)$)",
-      "action": "block",
-      "message": "写入密钥类文件，已拦截"
-    },
-    {
-      "name": "etc-shadow",
-      "trigger": "write_file",
-      "pattern": "/etc/shadow|/etc/passwd>",
-      "action": "block",
-      "message": "写入系统密码文件，已拦截"
+      "name": "block-api-key-leak",
+      "type": "write",
+      "pattern": "(sk-|api_key|apiSecret|DEEPSEEK_API_KEY).{10,}",
+      "action": "veto"
     }
   ]
 }

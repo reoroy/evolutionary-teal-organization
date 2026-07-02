@@ -281,6 +281,19 @@ async function executePlanViaMaestro(task: string, steps: string[]): Promise<any
   }
 
   let SENTINEL = loadSentinelConfig();
+  const rateLimitMap = new Map<string, number[]>();
+
+  function checkRateLimit(ruleName: string): boolean {
+    if (!SENTINEL.rateLimit) return true;
+    const { windowMs, maxPerWindow } = SENTINEL.rateLimit;
+    const now = Date.now();
+    let timestamps = rateLimitMap.get(ruleName) || [];
+    timestamps = timestamps.filter(t => now - t < windowMs);
+    if (timestamps.length >= maxPerWindow) return false;
+    timestamps.push(now);
+    rateLimitMap.set(ruleName, timestamps);
+    return true;
+  }
 
   async function checkSentinel(event: any, ctx: any): Promise<{ block: true; reason: string } | null> {
     if (!SENTINEL.enabled) return null;
@@ -290,6 +303,10 @@ async function executePlanViaMaestro(task: string, steps: string[]): Promise<any
       const cmd = event.input.command;
       for (const rule of SENTINEL.rules) {
         if (rule.trigger !== "bash") continue;
+        if (!checkRateLimit(rule.name)) {
+          logSentinel(rule.name + "-ratelimit", cmd);
+          return { block: true, reason: `频率限制: ${rule.name}` };
+        }
         const re = new RegExp(rule.pattern, "i");
         if (!re.test(cmd)) continue;
 
@@ -302,13 +319,24 @@ async function executePlanViaMaestro(task: string, steps: string[]): Promise<any
       }
     }
 
-    // write_file trigger
+    // write_file trigger — path + content scan
     if (event.toolName === "write" && typeof event.input?.filepath === "string") {
+      const content = typeof event.input.content === "string" ? event.input.content : "";
       for (const rule of SENTINEL.rules) {
         if (rule.trigger !== "write_file") continue;
-        if (!new RegExp(rule.pattern, "i").test(event.input.filepath)) continue;
-        logSentinel(rule.name, event.input.filepath);
-        return { block: true, reason: rule.message || rule.name };
+        if (!checkRateLimit(rule.name)) {
+          logSentinel(rule.name + "-ratelimit", event.input.filepath);
+          return { block: true, reason: `频率限制: ${rule.name}` };
+        }
+        if (new RegExp(rule.pattern, "i").test(event.input.filepath)) {
+          logSentinel(rule.name, event.input.filepath);
+          return { block: true, reason: rule.message || rule.name };
+        }
+        const cp = rule.contentPattern ? new RegExp(rule.contentPattern, "i") : null;
+        if (cp && cp.test(content)) {
+          logSentinel(rule.name + "-scan", event.input.filepath);
+          return { block: true, reason: `内容扫描: ${event.input.filepath} 含敏感信息` };
+        }
       }
     }
 
@@ -408,30 +436,19 @@ function setProviderChoice(choice: number): void {
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const onb = loadOnboarding();
-    if (needOnboarding(onb)) {
-      if (onb.current_step === 0) {
-        onb.first_session_at = new Date().toISOString();
-        saveOnboarding(onb);
-        ctx.ui.notify("🦋 ETO 你好！回复「是」开始配置。", "info");
-        ctx.ui.setWidget("eto-route", [
-          "╭── 🦋 ETO 青色组织 ───────────────╮",
-          "│  多 Agent 编排系统就绪。        │",
-          "│  直接描述任务即可开始。         │",
-          "│  试试：「帮我写个 Python 程序」  │",
-          "╰────────────────────────────────────╯"
-        ]);
-      } else if (onb.current_step === 3) {
-        ctx.ui.setWidget("eto-route", [
-          "╭── 🎯 试试第一条任务 ───────────────╮",
-          "│  ETO 已就绪！试试说：             │",
-          "│  「帮我写个 Python 程序」         │",
-          "╰────────────────────────────────────╯"
-        ]);
-      }
+    if (needOnboarding(onb) && onb.current_step === 0) {
+      onb.first_session_at = new Date().toISOString();
+      saveOnboarding(onb);
+      ctx.ui.setWidget("eto-route", [
+        "╭── 🦋 ETO 青色组织 ───────────────╮",
+        "│  多 Agent 编排系统就绪。        │",
+        "│  回复「是」开始配置（30秒）。   │",
+        "│  回复「跳过」直接使用。          │",
+        "╰────────────────────────────────────╯"
+      ]);
       return;
     }
-    ctx.ui.notify("🦋 /ETO  —  无序 · 三生 · 有机", "info");
-    ctx.ui.setWidget("eto-route", ["📋 ETO 等待中...", "输入任务开始青色组织工作流"]);
+    ctx.ui.setWidget("eto-route", ["📋 ETO 等待中...", "输入任务开始"]);
   });
 
   pi.registerCommand("eto", {
@@ -444,6 +461,15 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify("│ Entropy · Trinity · Organic│", "info");
       ctx.ui.notify("╰──────────────────────────╯", "info");
       ctx.ui.notify("三镜路由: LLM 语义 + 关键词 | 智子: ✅ | 共识: VotingAI", "info");
+    },
+  });
+
+  pi.registerCommand("sentinel-reload", {
+    description: "重新加载智子安全检查配置",
+    handler: async (_args, ctx) => {
+      SENTINEL = loadSentinelConfig();
+      rateLimitMap.clear();
+      ctx.ui.notify("智子配置已重新加载", "info");
     },
   });
 
@@ -466,13 +492,58 @@ export default function (pi: ExtensionAPI) {
     const task = event.prompt || "";
     if (!task) return;
 
-    // Onboarding T3-T4: first real task detected
+    // ── Onboarding grilling: advance steps based on user reply ──
     const onb = loadOnboarding();
-    if (onb.current_step === 3 && !onb.first_task_done) {
-      onb.first_task_done = true;
-      onb.current_step = 4;
-      saveOnboarding(onb);
-      ctx.ui.notify("Onboarding complete!", "info");
+    if (needOnboarding(onb)) {
+      if (onb.current_step === 0) {
+        // T1: user replied after welcome — yes or skip
+        if (/是|好|行|可以|确认|y|yes/i.test(task)) {
+          onb.current_step = 1;
+          saveOnboarding(onb);
+          ctx.ui.setWidget("eto-route", [
+            "╭── 选择 LLM Provider ─────────────╮",
+            "│  1) DeepSeek API（推荐）         │",
+            "│  2) Ollama 本地模型              │",
+            "│  3) 跳过（纯关键词路由）        │",
+            "│  回复数字 1/2/3                  │",
+            "╰────────────────────────────────────╯"
+          ]);
+          return { systemPrompt: "" };
+        }
+        onb.skipped = true;
+        saveOnboarding(onb);
+        ctx.ui.setWidget("eto-route", ["📋 ETO 等待中...", "输入任务开始"]);
+        return { systemPrompt: "" };
+      }
+      if (onb.current_step === 1) {
+        // T2: user chose provider
+        const choice = parseInt(task);
+        if (choice >= 1 && choice <= 3) {
+          setProviderChoice(choice);
+          onb.current_step = 3;
+          saveOnboarding(onb);
+          ctx.ui.setWidget("eto-route", [
+            "╭── 🎯 试试第一条任务 ───────────────╮",
+            "│  配置完成！描述任务即可。         │",
+            "│  试试：「帮我写个 Python 程序」    │",
+            "╰────────────────────────────────────╯"
+          ]);
+          return { systemPrompt: "" };
+        }
+        ctx.ui.setWidget("eto-route", [
+          "╭── 选择 LLM Provider ─────────────╮",
+          "│  请回复数字 1、2 或 3             │",
+          "╰────────────────────────────────────╯"
+        ]);
+        return { systemPrompt: "" };
+      }
+      if (onb.current_step === 3) {
+        // T3-T4: first real task detected
+        onb.first_task_done = true;
+        onb.current_step = 4;
+        saveOnboarding(onb);
+        ctx.ui.notify("🎉 首次配置完成！之后直接说话就行。", "info");
+      }
     }
 
     stitchFailureCount = 0; // 重置熔断器
