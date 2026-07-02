@@ -268,10 +268,18 @@ async function executePlanViaMaestro(task: string, steps: string[]): Promise<any
     pattern: string;
     action: "confirm" | "block" | "log";
     message?: string;
+    contentPattern?: string;
   }
 
-  function loadSentinelConfig(): { enabled: boolean; rules: SentinelRule[]; logFile: string } {
-    const defaultResult = { enabled: true, rules: [{ name: "default-rm", trigger: "bash", pattern: "rm\\s+-rf|dd\\s+if=|mkfs", action: "confirm" }] as SentinelRule[], logFile: "" };
+  interface SentinelConfig {
+    enabled: boolean;
+    rules: SentinelRule[];
+    logFile: string;
+    rateLimit?: { windowMs: number; maxPerWindow: number; action: string };
+  }
+
+  function loadSentinelConfig(): SentinelConfig {
+    const defaultResult: SentinelConfig = { enabled: true, rules: [{ name: "default-rm", trigger: "bash", pattern: "rm\\s+-rf|dd\\s+if=|mkfs", action: "confirm" }], logFile: "" };
     const configPath = join(require("os").homedir(), ".pi", "eto-sentinel.json");
     try {
       if (!existsSync(configPath)) return defaultResult;

@@ -8,16 +8,26 @@
   "logFile": "~/.eto/sentinel-log.jsonl",
   "rules": [
     {
-      "name": "block-dangerous-commands",
-      "type": "bash",
-      "pattern": "rm -rf|dd if=|format |mkfs|> /dev/",
-      "action": "veto"
+      "name": "dangerous-rm",
+      "trigger": "bash",
+      "pattern": "(rm\\s+-rf|dd\\s+if=|mkfs|format\\s+/dev|>\\s*/dev/)",
+      "action": "confirm",
+      "message": "危险删除操作，确认放行？"
     },
     {
-      "name": "block-api-key-leak",
-      "type": "write",
-      "pattern": "(sk-|api_key|apiSecret|DEEPSEEK_API_KEY).{10,}",
-      "action": "veto"
+      "name": "disk-format",
+      "trigger": "bash",
+      "pattern": "(mkfs|fdisk\\s+-l|wipefs|dd.*of=/dev)",
+      "action": "confirm",
+      "message": "磁盘格式化/擦除操作，确认放行？"
+    },
+    {
+      "name": "api-key-leak",
+      "trigger": "write_file",
+      "pattern": "(\\.ssh/|\\.gnupg/|\\.(pem|key|p12)$)",
+      "contentPattern": "(sk-|api_key|apiSecret|DEEPSEEK_API_KEY).{10,}",
+      "action": "block",
+      "message": "写入密钥类文件或含 API key 内容，已拦截"
     }
   ]
 }
