@@ -1,3 +1,5 @@
+DO NOT send optional commentary.
+
 # ETO 项目约定 — 给 Claude 的指令
 
 ## 第一性原理：不要造轮子（优先级最高）
