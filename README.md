@@ -60,29 +60,18 @@ eto-mesh join             # 注册本机
 eto-mesh status           # 确认在线
 ```
 
-### Claude Code
-```bash
-bash scripts/install-eto-claude.sh
-# → 重启 Claude Code 后 MCP tools 自动可用
-```
+### AI 自动安装
 
-### Reasonix
-```bash
-bash scripts/install-eto-reasonix.sh
-# → Reasonix 可直接调 eto_consensus / eto_route 等工具
-```
+把以下提示词发给你的 AI 编码助手（Claude Code / Cursor / Windsurf 等），它会自动配置 MCP：
 
-### Hermes (Linux)
-```bash
-bash scripts/install-eto-hermes.sh
-# → 定时心跳到 registry，其他 Agent 可见
-```
-
-### 验证
-```bash
-eto-mesh status
-# → 应列出所有已注册 Agent
-```
+> 这个项目是 ETO Mesh。添加 ETO MCP Server 到 `.mcp.json`：
+> - 命令: `python -m eto.mcp_server`
+> - 工作目录: 项目根路径
+> - 目的: 提供 eto_consensus / eto_route / eto_memory_write 等工具
+>
+> 运行 `pip install -e .` 安装依赖，
+> 运行 `eto-mesh join` 注册到 Mesh，
+> 运行 `eto-mesh status` 确认在线。
 
 ### 卸载
 
