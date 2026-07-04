@@ -154,7 +154,7 @@ ETO 的 agent 之间通过 `~/.eto/shared_memory/` 共享上下文。每次 peer
 其他 Agent（Claude Code、Cursor 等）可直接调 ETO 的共识、路由和记忆：
 
 ```json
-// .mcp.json
+// .mcp.json — 加到你的项目根目录
 {
   "mcpServers": {
     "eto-mcp": {
@@ -165,20 +165,23 @@ ETO 的 agent 之间通过 `~/.eto/shared_memory/` 共享上下文。每次 peer
 }
 ```
 
-**暴露的工具：**
+启动后 Claude Code / Cursor / Claude Desktop 可直接调 ETO 的 6 个工具。
 
-| MCP 工具 | 作用 | 调用示例 |
-|:---------|:-----|:---------|
-| `eto_consensus` | 三阶段共识评分 | `{"plan":"部署到生产","peers":["researcher","coder","auditor"]}` |
-| `eto_route` | 三镜路由分类 | `{"task":"写个 Python 爬虫"}` |
-| `eto_peer_config` | 查看 peer 配置 | `{}` |
-| `eto_memory_write` | 写共享记忆 | `{"key":"decision:db","value_json":"{\\"action\\":\\"migrate\\"}"}` |
-| `eto_memory_read` | 读共享记忆 | `{"key":"decision:db"}` |
-| `eto_memory_list` | 列出记忆 key | `{"pattern":"decision"}` |
+**验证 MCP Server 正常工作：**
 
 ```bash
-# 验证 MCP Server 启动
 python -m eto.mcp_server
+```
+
+然后用 MCP Client 调工具（已验证通过）：
+
+```
+eto_consensus   → status, final_score, votes, deliberation, actions
+eto_route       → gewu, route, confidence, layer
+eto_peer_config → 当前 peer→provider 映射
+eto_memory_write → 写共享记忆
+eto_memory_read  → 读共享记忆
+eto_memory_list  → 列出所有记忆 key
 ```
 
 ### ETO 作为 MCP Client
