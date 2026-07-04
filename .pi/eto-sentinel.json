@@ -1,33 +1,59 @@
 {
   "enabled": true,
-  "rateLimit": {
-    "windowMs": 60000,
-    "maxPerWindow": 5,
-    "action": "block"
+  "deadlock": {
+    "maxBlocksPerRule": 5,
+    "escapeAction": "log",
+    "autoResetMs": 300000
   },
-  "logFile": "~/.eto/sentinel-log.jsonl",
   "rules": [
     {
-      "name": "dangerous-rm",
+      "name": "dangerous-bash",
+      "enabled": true,
+      "priority": 20,
+      "type": "block",
       "trigger": "bash",
-      "pattern": "(rm\\s+-rf|dd\\s+if=|mkfs|format\\s+/dev|>\\s*/dev/)",
-      "action": "confirm",
-      "message": "危险删除操作，确认放行？"
-    },
-    {
-      "name": "disk-format",
-      "trigger": "bash",
-      "pattern": "(mkfs|fdisk\\s+-l|wipefs|dd.*of=/dev)",
-      "action": "confirm",
-      "message": "磁盘格式化/擦除操作，确认放行？"
+      "pattern": "rm\\s+-rf|dd if=|mkfs\\.|format |:(){ :\\|:& };:",
+      "message": "危险命令已拦截"
     },
     {
       "name": "api-key-leak",
-      "trigger": "write_file",
-      "pattern": "(\\.ssh/|\\.gnupg/|\\.(pem|key|p12)$)",
-      "contentPattern": "(sk-|api_key|apiSecret|DEEPSEEK_API_KEY).{10,}",
-      "action": "block",
-      "message": "写入密钥类文件或含 API key 内容，已拦截"
+      "enabled": true,
+      "priority": 15,
+      "type": "block",
+      "trigger": "write",
+      "pattern": "\\.(key|pem|p12|env)$|sk-[A-Za-z0-9]{20,}",
+      "message": "阻止泄露密钥文件"
+    },
+    {
+      "name": "rm-confirm",
+      "enabled": true,
+      "priority": 10,
+      "type": "confirm",
+      "trigger": "bash",
+      "pattern": "rm\\s+-rf",
+      "message": "删除文件，请确认路径"
+    },
+    {
+      "name": "batch-edit-warn",
+      "enabled": true,
+      "type": "confirm",
+      "trigger": "edit",
+      "pattern": ".*",
+      "message": "批量编辑文件，确认？"
+    },
+    {
+      "name": "git-force-push",
+      "enabled": true,
+      "type": "confirm",
+      "trigger": "bash",
+      "pattern": "git push --force|git push -f",
+      "message": "强制推送将覆盖远程历史，确认？"
     }
-  ]
+  ],
+  "logFile": "~/.eto/sentinel-log.jsonl",
+  "rateLimit": {
+    "windowMs": 60000,
+    "maxPerWindow": 10,
+    "action": "block"
+  }
 }

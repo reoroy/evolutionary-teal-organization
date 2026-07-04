@@ -281,12 +281,24 @@ async function executePlanViaMaestro(task: string, steps: string[]): Promise<any
   //  智子安检 — 可配置规则引擎
   // ═══════════════════════════════════════════════════
 
+  // ═══════════════════════════════════════════════════
+  //  智子 v2 — AgentGuard 级规则引擎
+  // ═══════════════════════════════════════════════════
+
   interface SentinelRule {
     name: string;
-    trigger: "bash" | "write_file";
-    pattern: string;
-    action: "confirm" | "block" | "log";
+    enabled?: boolean;
+    priority?: number;
+    type: "block" | "confirm" | "transform" | "track_turns";
+    trigger?: string;
+    pattern?: string;
     message?: string;
+    from?: string;
+    to?: string;
+    maxTurns?: number;
+    reminder?: string;
+    // backward compat
+    action?: string;
     contentPattern?: string;
   }
 
@@ -294,21 +306,37 @@ async function executePlanViaMaestro(task: string, steps: string[]): Promise<any
     enabled: boolean;
     rules: SentinelRule[];
     logFile: string;
+    deadlock?: { maxBlocksPerRule: number; escapeAction: string; autoResetMs: number };
     rateLimit?: { windowMs: number; maxPerWindow: number; action: string };
   }
 
+  function migrateRule(r: any): SentinelRule {
+    if (r.type) return r as SentinelRule;
+    // old format: {trigger, pattern, action} → new format
+    const typeMap: Record<string, string> = { block: "block", confirm: "confirm", log: "block" };
+    return { name: r.name, enabled: r.action !== "log", priority: 0, type: (typeMap[r.action] || "block") as any, trigger: r.trigger === "write_file" ? "write" : r.trigger, pattern: r.pattern, message: r.message, contentPattern: r.contentPattern };
+  }
+
   function loadSentinelConfig(): SentinelConfig {
-    const defaultResult: SentinelConfig = { enabled: true, rules: [{ name: "default-rm", trigger: "bash", pattern: "rm\\s+-rf|dd\\s+if=|mkfs", action: "confirm" }], logFile: "" };
+    const defaultResult: SentinelConfig = { enabled: true, rules: [{ name: "dangerous-bash", enabled: true, priority: 20, type: "block", trigger: "bash", pattern: "rm\\s+-rf|dd\\s+if=|mkfs", message: "危险命令" }], logFile: "" };
     const configPath = join(require("os").homedir(), ".pi", "eto-sentinel.json");
     try {
       if (!existsSync(configPath)) return defaultResult;
       const raw = JSON.parse(readFileSync(configPath, "utf-8"));
-      return { enabled: raw.enabled !== false, rules: raw.rules || [], logFile: (raw.logFile || "~/.eto").replace("~", require("os").homedir()) };
+      return {
+        enabled: raw.enabled !== false,
+        rules: (raw.rules || []).map(migrateRule),
+        logFile: (raw.logFile || "~/.eto/sentinel-log.jsonl").replace("~", require("os").homedir()),
+        deadlock: raw.deadlock,
+        rateLimit: raw.rateLimit,
+      };
     } catch { return defaultResult; }
   }
 
   let SENTINEL = loadSentinelConfig();
   const rateLimitMap = new Map<string, number[]>();
+  const blockCounters = new Map<string, number>();
+  let turnCounter = 0;
 
   function checkRateLimit(ruleName: string): boolean {
     if (!SENTINEL.rateLimit) return true;
@@ -322,48 +350,60 @@ async function executePlanViaMaestro(task: string, steps: string[]): Promise<any
     return true;
   }
 
+  function checkDeadlock(ruleName: string): boolean {
+    const count = blockCounters.get(ruleName) || 0;
+    const maxBlocks = SENTINEL.deadlock?.maxBlocksPerRule ?? 5;
+    if (count >= maxBlocks) {
+      logSentinel(ruleName + "-escape", `blocked ${count}x, auto-escaped`);
+      return true;
+    }
+    blockCounters.set(ruleName, count + 1);
+    return false;
+  }
+
+  function matchTool(toolName: string, trigger: string | undefined): boolean {
+    if (!trigger) return false;
+    if (trigger === toolName) return true;
+    if (trigger.endsWith("*") && toolName.startsWith(trigger.slice(0, -1))) return true;
+    return false;
+  }
+
+  function generatePreview(cmd: string): string {
+    if (/rm\s+-rf\s+(\S+)/.test(cmd)) return `ls -la ${RegExp.$1} 2>&1 | head -20`;
+    if (/dd\s+if=(\S+)/.test(cmd)) return `lsblk 2>&1 | head -10`;
+    if (/rm\s+(\S+)/.test(cmd)) return `ls -la ${RegExp.$1} 2>&1 && wc -c ${RegExp.$1} 2>&1`;
+    return "";
+  }
+
   async function checkSentinel(event: any, ctx: any): Promise<{ block: true; reason: string } | null> {
     if (!SENTINEL.enabled) return null;
+    const input = JSON.stringify(event.input || "").toLowerCase();
+    const sortedRules = [...SENTINEL.rules].filter(r => r.enabled !== false).sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
 
-    // Bash trigger
-    if (event.toolName === "bash" && typeof event.input?.command === "string") {
-      const cmd = event.input.command;
-      for (const rule of SENTINEL.rules) {
-        if (rule.trigger !== "bash") continue;
-        if (!checkRateLimit(rule.name)) {
-          logSentinel(rule.name + "-ratelimit", cmd);
-          return { block: true, reason: `频率限制: ${rule.name}` };
-        }
-        const re = new RegExp(rule.pattern, "i");
-        if (!re.test(cmd)) continue;
+    for (const rule of sortedRules) {
+      if (rule.type === "block" || rule.type === "confirm") {
+        if (!matchTool(event.toolName, rule.trigger)) continue;
+        if (rule.pattern && !new RegExp(rule.pattern, "i").test(input)) continue;
+        if (!checkRateLimit(rule.name)) return { block: true, reason: `频率限制: ${rule.name}` };
+        if (checkDeadlock(rule.name)) return null;
 
-        if (rule.action === "block") { logSentinel(rule.name, cmd); return { block: true, reason: rule.message || rule.name }; }
-        if (rule.action === "log")   { logSentinel(rule.name, cmd); return null; }
-        // confirm
-        const ok = await ctx.ui.confirm("⛔ 智子安检", `[${rule.name}] ${rule.message || rule.name}\n操作：${cmd.slice(0, 80)}\n放行？`);
-        logSentinel(rule.name, cmd);
-        return ok ? null : { block: true, reason: rule.message || rule.name };
-      }
-    }
-
-    // write_file trigger — path + content scan
-    if (event.toolName === "write" && typeof event.input?.filepath === "string") {
-      const content = typeof event.input.content === "string" ? event.input.content : "";
-      for (const rule of SENTINEL.rules) {
-        if (rule.trigger !== "write_file") continue;
-        if (!checkRateLimit(rule.name)) {
-          logSentinel(rule.name + "-ratelimit", event.input.filepath);
-          return { block: true, reason: `频率限制: ${rule.name}` };
-        }
-        if (new RegExp(rule.pattern, "i").test(event.input.filepath)) {
-          logSentinel(rule.name, event.input.filepath);
+        if (rule.type === "block") {
+          logSentinel(rule.name, input.slice(0, 200));
           return { block: true, reason: rule.message || rule.name };
         }
-        const cp = rule.contentPattern ? new RegExp(rule.contentPattern, "i") : null;
-        if (cp && cp.test(content)) {
-          logSentinel(rule.name + "-scan", event.input.filepath);
-          return { block: true, reason: `内容扫描: ${event.input.filepath} 含敏感信息` };
+
+        // confirm with preview
+        const cmd = event.input?.command || "";
+        const previewCmd = generatePreview(cmd);
+        let preview = "";
+        if (previewCmd) {
+          try { preview = execSync(previewCmd, { timeout: 5000, encoding: "utf-8" }).toString().trim(); } catch {}
         }
+        const blockCount = blockCounters.get(rule.name) || 0;
+        const msg = `[${rule.name}] (已拦 ${blockCount} 次)\n操作：${cmd.slice(0, 80)}\n` + (preview ? `影响预览:\n${preview.slice(0, 300)}` : "");
+        const ok = await ctx.ui.confirm("⛔ 智子安检", msg);
+        logSentinel(rule.name, cmd.slice(0, 200));
+        return ok ? null : { block: true, reason: rule.message || rule.name };
       }
     }
 
@@ -373,8 +413,7 @@ async function executePlanViaMaestro(task: string, steps: string[]): Promise<any
   function logSentinel(ruleName: string, target: string): void {
     if (!SENTINEL.logFile) return;
     try {
-      const logPath = SENTINEL.logFile.endsWith(".jsonl") ? SENTINEL.logFile : SENTINEL.logFile + "/sentinel-log.jsonl";
-      require("fs").appendFileSync(logPath, JSON.stringify({ event: "blocked", rule: ruleName, target: target.slice(0, 200), ts: new Date().toISOString() }) + "\n", "utf-8");
+      require("fs").appendFileSync(SENTINEL.logFile, JSON.stringify({ event: "blocked", rule: ruleName, target: target.slice(0, 200), ts: new Date().toISOString() }) + "\n", "utf-8");
     } catch {}
   }
 
@@ -570,6 +609,28 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    blockCounters.clear();  // 用户新消息 → 逃生门计数归零
+    turnCounter++;
+
+    // transform rules — 修改 prompt
+    if (event.prompt) {
+      for (const rule of SENTINEL.rules) {
+        if (rule.enabled === false || rule.type !== "transform") continue;
+        if (rule.from) {
+          event.prompt = event.prompt.replace(new RegExp(rule.from, "g"), rule.to || "");
+        }
+      }
+    }
+
+    // track_turns — 超阈值注入提醒
+    for (const rule of SENTINEL.rules) {
+      if (rule.enabled === false || rule.type !== "track_turns") continue;
+      if (turnCounter >= (rule.maxTurns || 10)) {
+        event.prompt = `[智子提醒] ${rule.reminder || "注意轮数"}\n\n` + (event.prompt || "");
+        turnCounter = 0;
+      }
+    }
+
     const task = event.prompt || "";
     if (!task) return;
 
