@@ -59,8 +59,8 @@ def execute_plan(task: str, steps: list[str]) -> dict:
         outputs.append(result)
         context = result[:500]  # 向下文传递上一步摘要
         try:
-            from eto.stitches.memory.teal_context import append
-            append({"type": "plan_step", "step": i, "total": total, "status": "ok" if "失败" not in result else "fail"})
+            from eto.stitches.memory.shared_memory import write
+            write(f"plan_step:{i}", {"type": "plan_step", "step": i, "total": total, "status": "ok" if "失败" not in result else "fail"})
         except: pass
 
     return {"outputs": outputs, "total": total}

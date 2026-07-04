@@ -41,6 +41,34 @@ def eto_peer_config() -> str:
         except: pass
     return json.dumps(cfg, ensure_ascii=False)
 
+@mcp.tool(description="写共享记忆 (pi-team-agents 兼容 KV)")
+def eto_memory_write(key: str, value_json: str) -> str:
+    """写入一条共享记忆，其他 Agent 可读取"""
+    from eto.stitches.memory.shared_memory import write
+    import json as _json
+    try:
+        value = _json.loads(value_json) if isinstance(value_json, str) else value_json
+    except:
+        value = {"text": value_json}
+    write(key, value)
+    return f"记忆 '{key}' 已写入"
+
+@mcp.tool(description="读共享记忆")
+def eto_memory_read(key: str) -> str:
+    """读取一条共享记忆"""
+    from eto.stitches.memory.shared_memory import read
+    import json as _json
+    val = read(key)
+    return _json.dumps(val, ensure_ascii=False) if val else f"记忆 '{key}' 不存在"
+
+@mcp.tool(description="列出共享记忆 key")
+def eto_memory_list(pattern: str = "") -> str:
+    """列出所有共享记忆 key"""
+    from eto.stitches.memory.shared_memory import list_keys
+    import json as _json
+    keys = list_keys(pattern)
+    return _json.dumps(keys, ensure_ascii=False)
+
 def main():
     mcp.run(transport="stdio")
 

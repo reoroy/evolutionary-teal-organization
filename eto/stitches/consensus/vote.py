@@ -148,11 +148,16 @@ def _score_single(peer: str, plan: str) -> dict:
     system = PEER_SYSTEM_PROMPTS.get(peer, "你是一个评审专家。")
     raw = _call_peer(peer, system, f"请对以下执行计划评分。输出 JSON: {{\"score\": 0.0-1.0, \"concern\": \"\", \"suggestion\": \"\"}}\n\n计划: {plan}")
     parsed = _extract_json(raw)
+    result = {"peer": peer, "score": 0.5, "concern": "", "suggestion": ""}
     if parsed:
-        return {"peer": peer, "score": min(max(float(parsed.get("score", 0.5)), 0), 1),
-                "concern": (parsed.get("concern", "") or "")[:200],
-                "suggestion": (parsed.get("suggestion", "") or "")[:200]}
-    return {"peer": peer, "score": 0.5, "concern": "", "suggestion": ""}
+        result["score"] = min(max(float(parsed.get("score", 0.5)), 0), 1)
+        result["concern"] = (parsed.get("concern", "") or "")[:200]
+        result["suggestion"] = (parsed.get("suggestion", "") or "")[:200]
+    try:
+        from eto.stitches.memory.shared_memory import write
+        write(f"peer_score:{peer}", {"type": "peer_score", "peer": peer, "score": result["score"], "concern": result.get("concern", "")})
+    except: pass
+    return result
 
 def peer_review(plan: str, peers: list[str]) -> dict:
     """三阶段共识：T1评分 → T2审议 → T3终审"""
@@ -193,6 +198,11 @@ def peer_review(plan: str, peers: list[str]) -> dict:
         for v in votes:
             v["final_score"] = v["score"]
 
+    try:
+        from eto.stitches.memory.shared_memory import write
+        write("consensus:last", {"type": "consensus", "status": result.get("status", ""),
+                "final_score": result.get("final_score", avg), "actions": result.get("actions", [])})
+    except: pass
     return result
 
 

@@ -102,4 +102,23 @@ p = not ("Traceback" in r.stderr)
 print(f"{OK_MARK if p else FAIL_MARK} mcp dispatch no-srv  不崩溃")
 all_ok = all_ok and p
 
+# ── Shared Memory 测试 ──────────────────────────────
+
+r = run(ROOT / "memory/shared_memory.py", {"fn": "write", "args": ["test:mem", {"msg": "hello"}]})
+p = ok(r) and '_error' not in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} shared_memory write   KV 写入")
+
+r = run(ROOT / "memory/shared_memory.py", {"fn": "read", "args": ["test:mem"]})
+p = ok(r) and '"hello"' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} shared_memory read    KV 读取")
+
+r = run(ROOT / "memory/shared_memory.py", {"fn": "context_block", "args": [3]})
+p = ok(r) and ('TealContext' in r.stdout or r.stdout.strip() == '""')
+print(f"{OK_MARK if p else FAIL_MARK} shared_memory ctx     context_block")
+
+r = run(ROOT / "memory/shared_memory.py", {"fn": "delete", "args": ["test:mem"]})
+p = ok(r)
+print(f"{OK_MARK if p else FAIL_MARK} shared_memory delete  KV 删除")
+all_ok = all_ok and p
+
 sys.exit(0 if all_ok else 1)

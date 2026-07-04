@@ -418,6 +418,14 @@ async function tryDispatchToMCPAgent(peerName: string, task: string): Promise<st
 }
 
 async function execPlan(task: string, route: RouteResult): Promise<string> {
+  // Inject TealContext (shared agent memory) into task
+  let contextTask = task;
+  try {
+    const out = execSync(`python3 -c "from eto.stitches.memory.shared_memory import context_block; print(context_block(5))"`, { encoding: "utf-8", timeout: 5000 });
+    const ctx = (out.stdout || out || "").trim();
+    if (ctx) contextTask = ctx + "\n\n" + task;
+  } catch {}
+
   const candidates: [string, number][] = [
     ["researcher", route.gewu === "research" ? 0.9 : 0.5],
     ["coder", route.gewu === "code" ? 0.9 : 0.5],
