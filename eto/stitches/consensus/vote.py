@@ -44,6 +44,8 @@ def _call_provider(provider: str, model: str, system: str, prompt: str) -> str:
         return _call_deepseek(model, system, prompt)
     elif provider == "claude":
         return _call_claude(model, system, prompt)
+    elif provider == "mcp":
+        return _call_mcp_agent(model, system, prompt)  # model 参数存的是 server_cmd JSON
     else:
         return _call_ollama(model, full)
 
@@ -93,6 +95,20 @@ def _call_claude(model: str, system: str, prompt: str) -> str:
             content = body.get("content") or []
             return "".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
     except: return ""
+
+def _call_mcp_agent(server_cmd_json: str, system: str, prompt: str) -> str:
+    """通过 MCP Client 调其他 Agent"""
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+        from eto.mcp_client import sync_call_mcp
+        cmd = json.loads(server_cmd_json)
+        args = {"system": system, "prompt": prompt}
+        result = sync_call_mcp(cmd, "agent_review", args)
+        if result:
+            return json.dumps(result, ensure_ascii=False)
+    except: pass
+    return ""
 
 def _call_peer(peer_name: str, system: str, prompt: str) -> str:
     """按 peer 配置路由到对应 provider"""

@@ -2,9 +2,247 @@
 
 > Pi 是 Agent 引擎。ETO 不是另一个引擎——ETO 是让多个引擎协作的制度。
 
-## 一句话
+ETO 是青色组织原则翻译成 AI Agent 系统的**编排层**——跑在 [Pi CLI](https://github.com/earendil-works/pi-coding-agent) 之上，做共识、路由、安检和上下文传递。
 
-ETO 是青色组织原则翻译成 AI Agent 系统的**编排层**——跑在 Pi CLI 之上，做共识、路由、选举、安全和上下文传递。不写框架，只缝开源。
+**一句话：给你的 AI Agent 装上三镜路由 + 同侪共识 + 智子安检。**
+
+---
+
+## 快速开始
+
+### 1. 安装 Pi CLI（Agent 运行时）
+
+```bash
+# Node.js (推荐)
+npm install -g @earendil-works/pi-coding-agent
+
+# 或 uv
+uv tool install @earendil-works/pi-coding-agent
+
+# 验证
+pi --help
+```
+
+Pi CLI 是 Agent 引擎，提供 TUI、工具调用、会话管理、provider 抽象。ETO 跑在 Pi 之上。
+
+### 2. 一键安装 ETO
+
+**Windows (cmd):**
+```cmd
+curl -O https://raw.githubusercontent.com/reoroy/evolutionary-teal-organization/main/install.cmd
+install.cmd
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/reoroy/evolutionary-teal-organization/main/install.ps1 | iex
+```
+
+**Mac / Linux / WSL:**
+```bash
+make setup
+```
+
+安装完成后，启动 Pi 即自动加载 ETO：
+
+```bash
+# 本地模型（Ollama）
+pi
+
+# 或走 Claude 代理
+run-eto.cmd          # Windows
+./run-eto.ps1        # PowerShell
+```
+
+### 3. 首次启动
+
+启动后 ETO 会引导你：
+1. 选择 LLM Provider（DeepSeek / Ollama / 跳过）
+2. 然后直接描述你的第一条任务
+
+---
+
+## 核心功能
+
+### 三镜路由 — 任务自动分类
+
+你说一句话，ETO 自动分析任务类型并路由到合适的处理路径：
+
+```mermaid
+flowchart LR
+  A[你的任务] --> B{三镜路由}
+  B -->|知识问答| C[direct 直接回答]
+  B -->|编码/实现| D[plan 多步规划]
+  B -->|危险操作| E[consensus 共识审批]
+```
+
+**示例：**
+
+| 你说的 | 路由结果 | 行为 |
+|:-------|:---------|:-----|
+| "什么是 Rust 的 ownership？" | direct → researcher | 直接回答 |
+| "帮我写一个 Python 爬虫" | plan → coder | 多步执行 |
+| "删除生产数据库" | consensus → auditor | 触发共识审批 |
+
+路由后端可配置：DeepSeek API（语义路由）或 Ollama 本地模型（关键词降级）。
+
+### 同侪共识 — 三阶段评审
+
+对风险操作，三个 AI 角色独立评审，杜绝单点决策：
+
+```
+T1: 独立评分
+   researcher ──→ {score, concern, suggestion}
+   coder      ──→ {score, concern, suggestion}
+   auditor    ──→ {score, concern, suggestion}
+
+T2: 审议（分歧 > 0.2 时触发）
+   各 peer 看到其他人的意见，重新评分
+   最多 2 轮，防止无限循环
+
+T3: 终审（审议后分歧仍大）
+   auditor 做终审裁决 → approve / revise / reject
+   输出改进行动项
+```
+
+每个 peer 可配置不同的 LLM provider：
+
+```json
+{
+  "peers": {
+    "researcher": { "provider": "ollama",   "model": "qwen2.5-coder:7b" },
+    "coder":      { "provider": "deepseek", "model": "deepseek-chat"    },
+    "auditor":    { "provider": "claude",   "model": "claude-sonnet-4-6" }
+  }
+}
+```
+
+配置在 `~/.pi/eto-config.json`，改完自动生效。
+
+### 智子安检 — 安全门禁
+
+可配置规则引擎，在危险操作前拦截：
+
+```json
+{
+  "rules": [
+    { "trigger": "bash", "pattern": "rm\\s+-rf",  "action": "confirm" },
+    { "trigger": "bash", "pattern": "dd\\s+if=",  "action": "block"   }
+  ]
+}
+```
+
+| 动作 | 效果 |
+|:-----|:------|
+| `confirm` | 弹窗确认，你决定 |
+| `block` | 直接拦截，不弹窗 |
+| `log` | 放行但记录审计日志 |
+
+配置：`~/.pi/eto-sentinel.json`，热重载。
+
+### MCP 集成 — 调其他 Agent / 被其他 Agent 调
+
+ETO 提供 MCP Server，让任何 MCP 客户端（Claude Code、Cursor 等）直接调用 ETO 的共识和路由：
+
+```json
+// .mcp.json
+{
+  "mcpServers": {
+    "eto": {
+      "command": "python",
+      "args": ["-m", "eto.mcp_server"]
+    }
+  }
+}
+```
+
+**暴露的工具：**
+
+| 工具 | 作用 |
+|:-----|:------|
+| `eto_consensus` | 对执行计划做三阶段共识评分 |
+| `eto_route` | 三镜路由分析任务 |
+| `eto_peer_config` | 查看 peer→provider 映射 |
+
+**peer 也可以配置走 MCP 调其他 Agent：**
+
+```json
+{
+  "peers": {
+    "auditor": {
+      "provider": "mcp",
+      "mcp_server": ["python", "-m", "auditor_agent_mcp"],
+      "mcp_tool": "audit_review"
+    }
+  }
+}
+```
+
+这意味着你可以让 Reasonix、Claude Code 或其他 Agent 参与 ETO 的共识评审。
+
+---
+
+## 日常使用
+
+### 启动
+
+```bash
+# 交互模式（TUI）
+pi
+
+# 走 Claude 代理
+run-eto.cmd
+
+# 一次性查询
+pi -p "帮我分析这段代码的性能瓶颈"
+
+# 指定 provider
+pi --provider deepseek --model deepseek-chat
+```
+
+### 智子命令
+
+在对话中输入：
+
+| 命令 | 作用 |
+|:-----|:------|
+| `/sentinel-reload` | 热重载安检配置 |
+| `/metrics` | 查看运行统计 |
+
+### 开发命令（ETO 自身开发）
+
+如果你要修改 ETO 本身：
+
+```bash
+# 先安装开发依赖
+pip install -e eto/
+
+# 运行测试
+python eto/stitches/test.py
+
+# 发布
+make release V=v0.x.0
+```
+
+完整的开发工作流见 [开发流程文档](.claude/rules/eto-guide.md)。
+
+---
+
+## 卸载
+
+```bash
+# Windows
+uninstall.cmd
+
+# PowerShell
+./uninstall.ps1
+
+# 手动
+pi remove eto/extensions/eto.ts
+rm -rf ~/.eto ~/.pi/etoprofiles ~/.pi/eto-config.json
+```
+
+---
 
 ## 架构（5 组件，<1000 行）
 
@@ -24,173 +262,59 @@ Agent C ──→                                            TealContext
 
 | 组件 | 做的事 | 不做什么 |
 |:-----|:-------|:---------|
-| **Agent Profile** | 每个 Agent 声明自己的能力全景（专长/风格/ICP/技能/MCP 工具），路由按 Profile 分配 | 不固定角色——Profile 是描述，不是标签 |
 | **三镜路由** | 分析任务→匹配 Profile→分给最合适的 Agent | 不写 Agent 逻辑 |
 | **协调员选举** | 按匹配度+空闲率选临时负责人 | 不建固定层级 |
-| **同侪共识** | peer 评分→超阈值执行 | 不搞一言堂 |
-| **智子守卫** | 安全检查 + **强制流程**：不只是 veto，还能 reroute 按预设流程走 | 不替 Agent 做决定 |
+| **同侪共识** | 三阶段评分→审议→终审 | 不搞一言堂 |
+| **智子守卫** | 安全检查 + 强制流程 | 不替 Agent 做决定 |
 | **TealContext** | 共享上下文池，Agent 互相看见 | 不取代 Pi 的会话管理 |
 
-**能力不丢失原则：** Agent 分配任务给另一个 Agent 时，接收方的全部能力（MCP、skill、工具）必须保留。不接受"subagent 降级"——ETO 里所有 Agent 都是平等完整节点。
+### 铁律
 
-**流程按需生成：** 任务流不是固定模板（研究员×3 步），而是由路由层根据任务特征动态决定拓扑结构。
+1. **Pi 有的绝对不写** — TUI、工具调用、会话管理、provider 抽象、Agent 运行时
+2. **ETO 只写编排层** — 路由、选举、共识、安检、上下文传递
+3. **代码量 < 1000 行** — 超过说明在造轮子
+4. **先问"Pi 有没有"** — 有就直接用
 
-**自动时间注入：** 每次执行前自动注入当前时间到 prompt。
+### 历史教训
 
-**Pi 有的不碰：** TUI（pi-tui）、工具调用（--tools）、会话管理（JSONL）、提供商抽象（pi-ai）、Agent 运行时（pi 命令）——这些 ETO 一律不写，直接用。
-
-## 当前状态（Extension 模式）
-
-```
-✅ 三镜路由（语义 + 关键词）
-✅ 智子安检（veto 模式）
-✅ before_agent_start 上下文注入 + 自动时间注入
-🟡 Agent Profile 注册表（现在只有 specialty，缺 style/ICP/MCP）
-🟡 共识工具（模拟随机数，缺真 peer 调用）
-📋 Enforcer 模式（强制流程）
-📋 流程按需生成（动态组装不固定）
-📋 能力不丢失（跨 Agent 调用保留完整能力）
-```
-
-形态：`~/.pi/agent/extensions/eto.ts`（~200 行 TypeScript），在 Pi 生态内跑通所有核心流程。
-
-## 路线图
-
-```
-Extension（现在）──验证设计──→ Fork 决策（1-2周）──→ 真多 Agent（长期）
-                    ↑                  ↑                       ↑
-              走通全部流程       触天花板就 Fork          Pi RPC / A2A
-              代码 <1000 行     没触就继续 Extension     多独立 Agent 进程
-```
-
-### 决策标准
-
-Fork 的前提——Extension **触及了 Pi 的能力天花板**：
-- ❓ 无法修改 Pi 的 TUI 显示 ETO 特有信息？
-- ❓ 无法修改 Pi 的会话存储格式？
-- ❓ 需要 Pi 没有的内核钩子？
-
-如果 YES → Fork，包名 `@reoroy/eto-cli`，保持 pi-ai + pi-tui。
-如果 NO → 继续 Extension，接受 ETO 是 Pi 生态的一个扩展。
-
-## 铁律（改代码前看）
-
-1. **Pi 有的绝对不写**——TUI、工具调用、会话管理、提供商抽象、Agent 运行时
-2. **ETO 只写编排层**——三镜路由、选举、共识、智子、上下文传递
-3. **代码量 < 1000 行**——超过就说明在造轮子
-4. **先问"Pi 有没有"**——有就直接 `import` / `--tools` / 调 `pi` 命令
-
-## 历史教训
-
-- ❌ 写了 3156 行 Python——其中 95% 是 Pi 已有的功能
-- ✅ 删到 119 行 TypeScript Extension——才意识到 ETO 的正确形态
-- **核心教训：ETO 做薄编排层跑在 Pi 之上，不是重写整个栈。**
+- ❌ 写了 3156 行 Python — 其中 95% 是 Pi 已有的功能
+- ✅ 删到 TypeScript Extension + Python stitches — 才意识到 ETO 的正确形态
+- **核心：ETO 做薄编排层跑在 Pi 之上，不是重写整个栈。**
 
 ---
 
-## 想要达成的功能和特性（65 特性 × 8 维度）
+## 项目结构
 
-完整清单：`docs/eto-feature-list.md`（含 ETO-001~066 编号、说明、优先级、来源追溯）
-
-### 🚪 入口与路由（ETO-001~008）
-| 特性 | 说人话 | 优先级 |
-|:-----|:-------|:-------|
-| 智子入口 | 统一 `eto <task>`，不走"聊到哪算哪" | P0 |
-| 三镜分拣 + 三体赋权 | 格物镜→析理镜→合验镜，理体/实体/得体三路赋权 | P0 |
-| 智能路由 | 单步直走 / 多步规划 / 多方共识 三种模式 | P0 |
-| 置信度学习 + Loop 检测 | 每次路由打置信分，自动修正 + 识别循环模式 | P1 |
-
-### 🦋 青色组织（ETO-009~021）
-| 特性 | 说人话 | 优先级 |
-|:-----|:-------|:-------|
-| 自主管理 Agent 池 | Agent 是 peer 不是 worker，有 Profile（专长/风格/ICP/技能/MCP） | P0 |
-| Agent Profile 注册表 | 每个 Agent 注册自己的完整能力画像，路由按 Profile 分派 | P0 |
-| 能力不丢失原则 | A 派活给 B 时 B 保留全部能力（MCP/skill/工具），不降级 | P0 |
-| 临时协调员选举 | `match_score(Agent, task) × (1 - busy_ratio)` 动态推举 | P0 |
-| 青色共识协议 | 提议→广播→peer 评分(>0.6 通过)→执行，最多 3 轮反馈调整 | P0 |
-| 流程按需生成 | 任务流不固定（不是研究员×3 的模板），路由层根据任务特征动态组装 | P0 |
-| 超时降级 + 死锁防护 | 10s 无响应自动执行，同一提议循环 3 轮标记死锁 | P1 |
-| 自动时间注入 | 每次执行前自动注入当前时间到 prompt | P1 |
-| 探索奖励 + 进化使命 | 10% 概率随机选非最优路由，集体回顾持续自我调整 | P2 |
-
-### 🧠 记忆与知识（ETO-022~033）
-| 特性 | 说人话 | 优先级 |
-|:-----|:-------|:-------|
-| TealContext 共享池 | global_memory + active_proposals + consensus_log | P0 |
-| 统一记忆 API | `perceive()/record()/query()` 三接口统一 | P0 |
-| 三层记忆 | agentmemory(独享) + gbrain(共享) + AIMemory(工作台) | P1 |
-| 知识蒸馏 + 记忆路由 | 对话→自动提炼 skill，自动判断新信息走哪层 | P1 |
-
-### 👑 治理/智子（ETO-034~042）
-| 特性 | 说人话 | 优先级 |
-|:-----|:-------|:-------|
-| 智子规则引擎 | YAML 配置，热重载，veto/warn/log 三种动作 | P0 |
-| 否决不提议 | 只拦越界不拦创新 | P0 |
-| **Enforcer 模式** | 不只是 block，还能强制 reroute 按预设流程走 | P0 |
-| 审计日志 + 成本防火墙 | 所有调用可查，单次任务预算上限、token 告警、模型降级 | P1 |
-| 流程强制器 | 对特定任务类型可预设执行路径，智子确保不走偏 | P1 |
-
-### 🤝 Agent 协作（ETO-043~047）
-| 特性 | 说人话 | 优先级 |
-|:-----|:-------|:-------|
-| Peer 注册发现 | Agent 动态加入/离开，查"谁在线" | P1 |
-| 跨 Agent 桥接 | Hermes ↔ Claude Code ↔ Reasonix 传上下文 | P2 |
-| 多 Agent 并行 + 调度 | 子任务分布式执行，按能力×负载×成本综合评分 | P1 |
-
-### 🏗️ Pi 架构（ETO-048~052）
-| 特性 | 说人话 | 优先级 |
-|:-----|:-------|:-------|
-| CLI 命令体系 | `eto 智子 / eto 做 / eto 问 / eto 提议` 等 | P0 |
-| Pi Extension | ETO 是 Pi 的一个扩展，不是独立框架 | P1 |
-| MCP 兼容层 + 模块化 | 对接任何 MCP 工具，各模块可单独升级 | P2 |
-
-### 📡 平台与渠道（ETO-053~055）
-| 特性 | 说人话 | 优先级 |
-|:-----|:-------|:-------|
-| 多渠道输出 | QQ/微信/Telegram 统一路由 | P2 |
-| 定时任务编排 + 推送路由 | cron 统一管理，低频重要→微信，高频提醒→QQ | P1 |
-
-### 🔄 进化与反馈（ETO-056~066）
-| 特性 | 说人话 | 优先级 |
-|:-----|:-------|:-------|
-| 集体回顾 | 定期分析失败模式，更新策略权重、清理记忆 | P0 |
-| 自动学习 | 踩坑→记教训→重复 3 次升永久规则 | P1 |
-| 四种 Loop | Rework(打回重做) / Iteration(逐步逼近) / Watch(外部触发) / Cron | P1 |
-| 远期 | Active Inference（自由能最小化）+ World Model（潜空间模拟） | ⭐ |
-
-### 开发纪律
-ETO-D01~D05：TDD-AI / Millstone(审) / Planwright(先想) / Trammel(知道怎么拼) / Compound Agent(全流程+回滚)——全部已装 ✅
+```
+eto/
+├── extensions/eto.ts        — Pi Extension（入口 + 路由 + 安检）
+├── mcp_server.py            — MCP Server（供其他 Agent 调用）
+├── mcp_client.py            — MCP Client（调其他 Agent）
+├── stitches/
+│   ├── consensus/vote.py    — 三阶段共识（评分→审议→终审）
+│   ├── election/elect.py    — 协调员选举
+│   ├── comms/a2a.py         — 多步任务执行
+│   └── test.py              — 集成测试
+├── bootstrap/               — 首次初始化
+├── install.cmd / .ps1       — 一键安装
+├── uninstall.cmd / .ps1     — 一键卸载
+├── run-eto.cmd / .ps1       — 启动脚本（走 Claude 代理）
+└── verify-eto.cmd           — 安装验证
+```
 
 ---
 
-## 功能缝合对照表
+## 配置
 
-> **原则：不写框架，只缝已有开源。ETO 的胶水代码预估 < 500 行。**
+| 文件 | 用途 |
+|:-----|:------|
+| `~/.pi/eto-config.json` | 路由 provider + peer→provider 映射 |
+| `~/.pi/eto-sentinel.json` | 智子安检规则 |
+| `~/.pi/etoprofiles/profiles.json` | Agent Profile 数据 |
+| `~/.eto/memory/` | 引导进度 + 经验数据 + 审计日志 |
 
-完整方案：`docs/ETO缝合方案对照表.md`（含备选方案、搭建顺序、编程 Agent 话术）
+---
 
-| 层 | ETO 需求 | 缝合方案 | 怎么缝 | 胶水代码 |
-|:---|:---------|:---------|:-------|:---------|
-| 📡 通信 | Agent 间发现与通信 | **A2A Protocol v1.0** + **ProtoLink** | 每个 Agent 启动时注册到 A2A 网络 | ~20 行 |
-| 🧩 编排 | 任务→DAG 分解 | **Maestro** (YAML DAG + CLI/REST) | 调 Maestro API 分解任务→分给 Agent | ~50 行 |
-| 🗳️ 共识 | 多 Agent 投票 | **VotingAI** (5 种策略，拜占庭容错) | 多模型并行评分→加权合成 | ~30 行 |
-| 👑 选举 | 协调员选举 | **raft-lite** (纯 Python 单文件 Raft) | 匹配度 × 空闲率动态推举 | ~30 行 |
-| 🧠 短期记忆 | 会话上下文 | **Pi JSONL 会话树** | Pi 内置，ETO 不碰 | 0 行 |
-| 🧠 长期记忆 | 跨会话持久化 | **@yylan/pi-memory** (4 层+FTS5+向量) | `pi install npm:@yylan/pi-memory` | ~20 行 |
-| 🔒 安全 | 护栏 | **Hermes enforcer** | 已在用 | 0 行 |
+## License
 
-### 已弃用的旧方案
-| 层 | 旧方案 | 原因 | 替代 |
-|:---|:-------|:-----|:-----|
-| 记忆 | agentmemory | 改为 Pi 生态扩展，更轻量 | @yylan/pi-memory |
-| 编排 | Nexus | 已不可用（2025 后） | Maestro / lythonic / Dagu |
-| 共识 | Aegean \| Gravity AI | 均不可用 | VotingAI / LLM Council / Aragora |
-
-### 搭建顺序
-```
-Phase 1 ✅  → Phase 2 🟡  → Phase 3-5 📋
-ProtoLink      Maestro         动态自组织
-A2A 通信       VotingAI        进化学习
-               raft-lite       理论引擎
-               pi-memory        (Active Inference)
-```
+MIT
