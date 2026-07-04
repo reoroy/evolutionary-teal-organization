@@ -118,20 +118,115 @@ echo '{"fn":"peer_review","args":["部署到生产环境不备份不测试",["re
 | `deepseek` | 环境变量 `DEEPSEEK_API_KEY` |
 | `claude` | 环境变量 `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`（经 Hermes 代理） |
 
-### 智子安检 — 安全门禁
+### 智子安检 v2 — AgentGuard 级行为规则引擎
+
+可配置规则引擎，拦截危险操作。支持四种规则类型 + 逃生门防循环。
+
+**配置 `~/.pi/eto-sentinel.json`，热重载（对话中输入 `/sentinel-reload`）。**
+
+#### 规则类型
+
+| 类型 | 行为 | 用途 |
+|:-----|:------|:------|
+| `block` | 关键词匹配→直接拦截 | 禁止高危命令（`rm -rf /`、`dd`、`mkfs`） |
+| `confirm` | 弹窗确认+影响预览 | 删除文件、批量编辑前让用户决定 |
+| `transform` | 正则替换 prompt 内容 | 自动过滤 emoji、敏感词 |
+| `track_turns` | 对话轮数超阈值→注入提醒 | 防止 Agent 跑偏 |
+
+#### 配置示例
 
 ```json
 {
+  "enabled": true,
+  "deadlock": {
+    "maxBlocksPerRule": 5,
+    "escapeAction": "log"
+  },
   "rules": [
-    { "trigger": "bash", "pattern": "rm\\s+-rf",  "action": "confirm" },
-    { "trigger": "bash", "pattern": "dd\\s+if=",  "action": "block"   }
+    {
+      "name": "dangerous-bash",
+      "enabled": true,
+      "priority": 20,
+      "type": "block",
+      "trigger": "bash",
+      "pattern": "rm\\s+-rf|dd\\s+if=|mkfs\\.|format",
+      "message": "危险命令已拦截"
+    },
+    {
+      "name": "rm-preview",
+      "enabled": true,
+      "priority": 10,
+      "type": "confirm",
+      "trigger": "bash",
+      "pattern": "rm\\s+-rf",
+      "message": "删除文件，请确认路径"
+    },
+    {
+      "name": "batch-edit-warn",
+      "enabled": true,
+      "type": "confirm",
+      "trigger": "edit",
+      "pattern": ".*",
+      "message": "批量编辑文件，确认？"
+    },
+    {
+      "name": "no-emoji",
+      "enabled": false,
+      "type": "transform",
+      "from": "[😀-🙏🟡-🫎]",
+      "to": ""
+    },
+    {
+      "name": "time-reminder",
+      "enabled": false,
+      "type": "track_turns",
+      "maxTurns": 10,
+      "reminder": "已过 10 轮，确认仍在正轨？"
+    }
   ]
 }
 ```
 
-动作：`confirm`（弹窗确认） / `block`（直接拦截） / `log`（放行+审计）。
+#### trigger glob 匹配
 
-配置 `~/.pi/eto-sentinel.json`，热重载（对话中输入 `/sentinel-reload`）。
+`trigger` 支持通配符 `*`，可匹配工具名：
+
+| trigger | 匹配的工具 |
+|:--------|:-----------|
+| `bash` | 仅 `bash` |
+| `write` | `write`、`write_file` |
+| `edit` | `edit` |
+| `git:*` | `git.push`、`git.commit`、`git.branch` 等所有 git 操作 |
+| `*` | 所有工具 |
+
+#### 强化 Confirm + 预览
+
+检测到危险 bash 命令时，自动生成安全预览命令：
+
+| 原始命令 | 预览命令 |
+|:---------|:---------|
+| `rm -rf /var/log` | `ls -la /var/log \| head -20` |
+| `dd if=/dev/zero of=/dev/sda` | `lsblk \| head -10` |
+| `rm file.txt` | `ls -la file.txt && wc -c file.txt` |
+
+用户看到影响范围后再决定放行或否决。
+
+#### 逃生门（防循环）
+
+同一规则在同一用户请求内连续拦截 N 次后自动放行：
+
+- 用户发新消息 → 所有拦截计数归零
+- 放行时写入审计日志并告知用户
+- `maxBlocksPerRule` 默认 5，可在 `deadlock` 段配置
+
+#### 向后兼容
+
+旧格式配置自动迁移到新格式：
+
+```json
+{ "trigger": "bash", "pattern": "rm\\s+-rf", "action": "block" }
+```
+→ 自动映射为 `type: "block"`, 旧 `action: "log"` 映射为 `enabled: false`
 
 ---
 
