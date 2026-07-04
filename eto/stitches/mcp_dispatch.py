@@ -11,6 +11,31 @@ def dispatch(server_cmd_json: str, tool: str, task: str) -> dict:
     result = sync_call_mcp(cmd, tool, {"task": task, "system": f"执行以下任务:\n{task}"})
     return result or {}
 
+def dispatch_with_spec(spec_json: str) -> dict:
+    """完整 dispatch_spec 调度：支持自定义 system_prompt/skills/mcp_tools/response_format/timeout"""
+    spec = json.loads(spec_json)
+    server_cmd = spec.get("server_cmd", [])
+    tool = spec.get("tool", "agent_execute")
+    task = spec.get("task", "")
+    args = {"task": task}
+    if spec.get("system_prompt"):
+        args["system"] = spec["system_prompt"]
+    else:
+        args["system"] = f"执行以下任务:\n{task}"
+    if spec.get("skills"):
+        args["skills"] = spec["skills"]
+    if spec.get("mcp_tools"):
+        args["mcp_tools"] = spec["mcp_tools"]
+    if spec.get("response_format"):
+        args["response_format"] = spec["response_format"]
+    if spec.get("params"):
+        args.update(spec["params"])
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+    from eto.mcp_client import sync_call_mcp
+    result = sync_call_mcp(server_cmd, tool, args)
+    return result or {}
+
 if __name__ == "__main__":
     data = json.loads(sys.stdin.read())
     fn = data.get("fn")

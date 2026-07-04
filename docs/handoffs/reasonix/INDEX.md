@@ -4,7 +4,8 @@
 
 | 会话 | Agent | 状态 | 焦点 | 最后活跃 |
 |:-----|:------|:-------|:-----|:---------|
-| main | Claude Code | ACTIVE | 计划/审计/统合 | 2026-07-02 |
+| main | Claude Code | ACTIVE | 计划/审计/统合 | 2026-07-04 |
+| coder | Reasonix | CLOSED | Step 3: eto-mesh CLI | 2026-07-04 |
 | coder | Reasonix | CLOSED | Phase 2-01: Async Stitcher + Profile | 2026-06-27 |
 | coder | Reasonix | CLOSED | Phase 2-02: Decompose + Dispatch | 2026-06-27 |
 | coder | Reasonix | CLOSED | Phase 2-03: Synthesis + Guards | 2026-06-27 |
@@ -13,12 +14,13 @@
 
 | 路径 | 持有者 | 操作 |
 |:-----|:-------|:-----|
-| `docs/handoffs/reasonix/plan-eto-shared-memory.md` | Claude Code | 📝 计划就绪 |
-| `eto/stitches/memory/teal_context.py` | — | ⏳ Step 1: 读写 + context_block |
-| `eto/stitches/consensus/vote.py` | — | ⏳ Step 2: 评分/共识后写 context |
-| `eto/stitches/comms/a2a.py` | — | ⏳ Step 3: 执行后写 context |
-| `eto/extensions/eto.ts` | — | ⏳ Step 4: 注入 context 到 prompt |
-| `eto/stitches/test.py` | — | ⏳ Step 5: context 测试 |
+| `docs/handoffs/reasonix/plan-teal-runtime-phase-a.md` | Claude Code | 📝 计划就绪 |
+| `eto/cli.py` | — | ✅ Step 3 完成 (Reasonix) |
+| `eto/stitches/mcp_dispatch.py` | — | ✅ Step 4 fix 完成 (Reasonix) |
+| `scripts/install-eto-*.sh` | — | ✅ Step 5 完成 (Reasonix) |
+| `eto/extensions/eto.ts` | Reasonix | 🔒 接入竞标逻辑 |
+| `eto/mcp_server.py` | — | ✅ Step 5 完成 |
+| `eto/stitches/bidding/protocol.py` | Reasonix | 🔒 新建：竞标层 |
 
 ## 协议
 
