@@ -13,14 +13,12 @@
 
 | 路径 | 持有者 | 操作 |
 |:-----|:-------|:-----|
-| `docs/handoffs/reasonix/plan-eto-phase4.md` | Claude Code | 📝 计划就绪 |
-| `eto/extensions/eto.ts` | — | ⏳ Phase 4-A: Onboarding grilling rewrite |
-| `eto/extensions/eto.ts` | — | ⏳ Phase 4-C: 智子扩展（rateLimit + scan + reload） |
-| `bootstrap/seed_sample_skills.py` | — | ⏳ 清空种子数据（不写假 skill） |
-| `bootstrap/__init__.py` | — | ⏳ 同步删除 seed_tasks 引用 |
-| `docs/test/eto-empty-states.md` | — | ⏳ Phase 4-B: 空状态测试文档 |
-| `docs/test/test_empty_states.py` | — | ⏳ Phase 4-B: 测试脚本 |
-| `.pi/eto-sentinel.json` | — | ⏳ Phase 4-C: 加 rateLimit 字段 |
+| `docs/handoffs/reasonix/plan-eto-mcp.md` | Claude Code | 📝 计划就绪 |
+| `eto/mcp_server.py` | — | ⏳ Step 1: FastMCP Server |
+| `eto/mcp_client.py` | — | ⏳ Step 2: MCP 客户端 |
+| `eto/stitches/consensus/vote.py` | — | ⏳ Step 3: 加 mcp provider |
+| `.mcp.json` | — | ⏳ Step 4: 注册 ETO MCP Server |
+| `eto/bootstrap/config_template.py` | — | ⏳ Step 4: 配置示例 |
 
 ## 协议
 

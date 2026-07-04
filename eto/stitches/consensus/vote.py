@@ -1,15 +1,103 @@
 """ETO Stitch: 三阶段共识投票（评分→审议→终审）"""
-import io, json, sys, urllib.request, urllib.error
+import io, json, os, sys, urllib.request, urllib.error
 sys.stdout.reconfigure(encoding="utf-8")
 
 OLLAMA_URL = "http://localhost:11434"
 MODEL = "qwen2.5-coder:7b"
+CLAUDE_PROXY = os.environ.get("ANTHROPIC_BASE_URL", "http://127.0.0.1:15721")
 
 PEER_SYSTEM_PROMPTS = {
     "researcher": "你是一个研究员。评估这个计划的完整性、可行性和证据充分性。重点关注：方案是否有漏洞、是否有数据支持、是否有替代方案被忽略。",
     "coder": "你是一个编码员。评估这个计划的技术可行性、实现难度和潜在技术债务。重点关注：实现路径是否合理、有没有更好的技术方案。",
     "auditor": "你是一个审计员。评估这个计划的风险面、潜在失败点和长期影响。重点关注：最坏情况下会怎样、有什么预防措施没考虑。"
 }
+
+# ── Peer Provider 配置 ─────────────────────────────────
+
+DEFAULT_PEER_CONFIG = {
+    "researcher": {"provider": "ollama", "model": MODEL},
+    "coder": {"provider": "ollama", "model": MODEL},
+    "auditor": {"provider": "ollama", "model": MODEL},
+    "终审仲裁者": {"provider": "ollama", "model": MODEL},
+}
+
+_PEER_CONFIG_CACHE = None
+
+def _load_peer_config() -> dict:
+    """从 ~/.pi/eto-config.json 读取 peer provider 映射"""
+    global _PEER_CONFIG_CACHE
+    if _PEER_CONFIG_CACHE is not None:
+        return _PEER_CONFIG_CACHE
+    path = os.path.expanduser("~/.pi/eto-config.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+        _PEER_CONFIG_CACHE = {**DEFAULT_PEER_CONFIG, **cfg.get("peers", {})}
+    except:
+        _PEER_CONFIG_CACHE = dict(DEFAULT_PEER_CONFIG)
+    return _PEER_CONFIG_CACHE
+
+def _call_provider(provider: str, model: str, system: str, prompt: str) -> str:
+    """路由到不同的 LLM provider"""
+    full = f"{system}\n\n{prompt}" if system else prompt
+    if provider == "deepseek":
+        return _call_deepseek(model, system, prompt)
+    elif provider == "claude":
+        return _call_claude(model, system, prompt)
+    else:
+        return _call_ollama(model, full)
+
+def _call_ollama(model: str, full_prompt: str) -> str:
+    """调 Ollama generate API"""
+    data = json.dumps({"model": model, "prompt": full_prompt, "stream": False,
+        "options": {"temperature": 0.7, "num_predict": 800}}).encode("utf-8")
+    req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=data,
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("response", "").strip()
+    except: return ""
+
+def _call_deepseek(model: str, system: str, prompt: str) -> str:
+    """调 DeepSeek API (OpenAI 兼容)"""
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        return ""
+    url = "https://api.deepseek.com/v1/chat/completions"
+    data = json.dumps({"model": model, "messages": [
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt}
+    ], "temperature": 0.7, "max_tokens": 800}).encode("utf-8")
+    req = urllib.request.Request(url, data=data,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            return (body.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+    except: return ""
+
+def _call_claude(model: str, system: str, prompt: str) -> str:
+    """调 Claude API（通过本地代理 Hermes 转发）"""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "PROXY_MANAGED")
+    url = f"{CLAUDE_PROXY}/v1/messages"
+    body = {"model": model, "max_tokens": 800, "messages": [{"role": "user", "content": prompt}]}
+    if system:
+        body["system"] = system
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data,
+        headers={"Content-Type": "application/json", "x-api-key": api_key,
+                 "anthropic-version": "2023-06-01"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            content = body.get("content") or []
+            return "".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
+    except: return ""
+
+def _call_peer(peer_name: str, system: str, prompt: str) -> str:
+    """按 peer 配置路由到对应 provider"""
+    cfg = _load_peer_config().get(peer_name, DEFAULT_PEER_CONFIG.get(peer_name, DEFAULT_PEER_CONFIG["researcher"]))
+    return _call_provider(cfg.get("provider", "ollama"), cfg.get("model", MODEL), system, prompt)
 
 def _extract_json(text: str) -> dict | None:
     import re
@@ -35,7 +123,7 @@ def _call_llm(system: str, prompt: str) -> str:
 def _score_single(peer: str, plan: str) -> dict:
     """单 peer 评分，返回 {score, concern, suggestion}"""
     system = PEER_SYSTEM_PROMPTS.get(peer, "你是一个评审专家。")
-    raw = _call_llm(system, f"请对以下执行计划评分。输出 JSON: {{\"score\": 0.0-1.0, \"concern\": \"\", \"suggestion\": \"\"}}\n\n计划: {plan}")
+    raw = _call_peer(peer, system, f"请对以下执行计划评分。输出 JSON: {{\"score\": 0.0-1.0, \"concern\": \"\", \"suggestion\": \"\"}}\n\n计划: {plan}")
     parsed = _extract_json(raw)
     if parsed:
         return {"peer": peer, "score": min(max(float(parsed.get("score", 0.5)), 0), 1),
@@ -58,7 +146,7 @@ def peer_review(plan: str, peers: list[str]) -> dict:
         deliberation_votes = []
         for p in peers:
             context = "\n".join(concerns) if concerns else "各方无具体意见"
-            raw = _call_llm(PEER_SYSTEM_PROMPTS.get(p, ""), f"其他评审意见:\n{context}\n\n请重新评分。输出 JSON: {{\"score\": 0.0-1.0}}")
+            raw = _call_peer(p, PEER_SYSTEM_PROMPTS.get(p, ""), f"其他评审意见:\n{context}\n\n请重新评分。输出 JSON: {{\"score\": 0.0-1.0}}")
             parsed = _extract_json(raw)
             s = min(max(float(parsed.get("score", 0.5)), 0), 1) if parsed else votes[peers.index(p)]["score"]
             deliberation_votes.append({"peer": p, "score": s, "final_score": s})
@@ -70,7 +158,7 @@ def peer_review(plan: str, peers: list[str]) -> dict:
         scores2 = [v.get("final_score", v["score"]) for v in votes]
         if max(scores2) - min(scores2) > 0.2:
             reviewer = "researcher" if "auditor" in [v["peer"] for v in votes if v["score"] == min(scores)] else "auditor"
-            raw = _call_llm("你是一个终审仲裁者。", f"根据以下评审意见做最终裁决。输出 JSON: {{\"verdict\": \"approve/revise/reject\", \"actions\": [\"...\"]}}\n\n评分:\n" + "\n".join([f"{v['peer']}: {v.get('final_score', v['score'])} ({v.get('concern', '')})" for v in votes]))
+            raw = _call_peer("终审仲裁者", "你是一个终审仲裁者。", f"根据以下评审意见做最终裁决。输出 JSON: {{\"verdict\": \"approve/revise/reject\", \"actions\": [\"...\"]}}\n\n评分:\n" + "\n".join([f"{v['peer']}: {v.get('final_score', v['score'])} ({v.get('concern', '')})" for v in votes]))
             parsed = _extract_json(raw)
             if parsed:
                 result["status"] = parsed.get("verdict", result["status"])

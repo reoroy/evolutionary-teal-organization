@@ -434,8 +434,14 @@ function setProviderChoice(choice: number): void {
   let config: any = {};
   try { if (existsSync(cfgPath)) config = JSON.parse(readFileSync(cfgPath, "utf-8")); } catch {}
   const pm: Record<number, string> = { 1: "deepseek", 2: "ollama", 3: "skip" };
+  const selected = pm[choice] || "deepseek";
   config.router = config.router || {};
-  config.router.provider = pm[choice] || "deepseek";
+  config.router.provider = selected;
+  // 同步设置 peer provider 默认值
+  config.peers = config.peers || {};
+  if (!config.peers.researcher) config.peers.researcher = { provider: selected, model: selected === "deepseek" ? "deepseek-chat" : "qwen2.5-coder:7b" };
+  if (!config.peers.coder) config.peers.coder = { provider: selected, model: selected === "deepseek" ? "deepseek-chat" : "qwen2.5-coder:7b" };
+  if (!config.peers.auditor) config.peers.auditor = { provider: selected, model: selected === "deepseek" ? "deepseek-chat" : "qwen2.5-coder:7b" };
   const dir = join(require("os").homedir(), ".pi");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(cfgPath, JSON.stringify(config, null, 2), "utf-8");
