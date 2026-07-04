@@ -406,27 +406,19 @@ interface OnboardingState {
   version: number;
   first_session_at?: string;
   seen_welcome: boolean;
-  provider_set: boolean;
-  first_task_done: boolean;
-  current_step: number;
-  skipped: boolean;
 }
 
 const ONBOARDING_PATH = join(require("os").homedir(), ".eto", "memory", "onboarding.json");
 
 function loadOnboarding(): OnboardingState {
   try { if (existsSync(ONBOARDING_PATH)) return JSON.parse(readFileSync(ONBOARDING_PATH, "utf-8")); } catch {}
-  return { version: 1, seen_welcome: false, provider_set: false, first_task_done: false, current_step: 0, skipped: false };
+  return { version: 1, seen_welcome: false };
 }
 
 function saveOnboarding(s: OnboardingState): void {
   const dir = join(require("os").homedir(), ".eto", "memory");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(ONBOARDING_PATH, JSON.stringify(s, null, 2), "utf-8");
-}
-
-function needOnboarding(s: OnboardingState): boolean {
-  return !s.skipped && s.current_step < 4;
 }
 
 function setProviderChoice(choice: number): void {
@@ -450,15 +442,22 @@ function setProviderChoice(choice: number): void {
 export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const onb = loadOnboarding();
-    if (needOnboarding(onb) && onb.current_step === 0) {
-      onb.first_session_at = new Date().toISOString();
+    if (!onb.seen_welcome) {
+      onb.seen_welcome = true;
       saveOnboarding(onb);
       ctx.ui.setWidget("eto-route", [
-        "╭── 🦋 ETO 青色组织 ───────────────╮",
-        "│  多 Agent 编排系统就绪。        │",
-        "│  回复「是」开始配置（30秒）。   │",
-        "│  回复「跳过」直接使用。          │",
-        "╰────────────────────────────────────╯"
+        "╭── ETO 功能指引 ───────────────────────╮",
+        "│                                        │",
+        "│  三镜路由: 任务自动分类 → 分配 Agent   │",
+        "│  同侪共识: 三阶段评分 → 审议 → 终审   │",
+        "│  多模型: 各 peer 可配不同 LLM          │",
+        "│  MCP 集成: 调其他 Agent / 被调        │",
+        "│                                        │",
+        "│  直接描述任务即可开始。                │",
+        "│  输入 /sentinel-reload 重载安检        │",
+        "│  输入 /metrics 查看运行统计            │",
+        "│                                        │",
+        "╰────────────────────────────────────────╯"
       ]);
       return;
     }
@@ -506,58 +505,11 @@ export default function (pi: ExtensionAPI) {
     const task = event.prompt || "";
     if (!task) return;
 
-    // ── Onboarding grilling: advance steps based on user reply ──
     const onb = loadOnboarding();
-    if (needOnboarding(onb)) {
-      if (onb.current_step === 0) {
-        // T1: user replied after welcome — yes or skip
-        if (/是|好|行|可以|确认|y|yes/i.test(task)) {
-          onb.current_step = 1;
-          saveOnboarding(onb);
-          ctx.ui.setWidget("eto-route", [
-            "╭── 选择 LLM Provider ─────────────╮",
-            "│  1) DeepSeek API（推荐）         │",
-            "│  2) Ollama 本地模型              │",
-            "│  3) 跳过（纯关键词路由）        │",
-            "│  回复数字 1/2/3                  │",
-            "╰────────────────────────────────────╯"
-          ]);
-          return { systemPrompt: "" };
-        }
-        onb.skipped = true;
-        saveOnboarding(onb);
-        ctx.ui.setWidget("eto-route", ["📋 ETO 等待中...", "输入任务开始"]);
-        return { systemPrompt: "" };
-      }
-      if (onb.current_step === 1) {
-        // T2: user chose provider
-        const choice = parseInt(task);
-        if (choice >= 1 && choice <= 3) {
-          setProviderChoice(choice);
-          onb.current_step = 3;
-          saveOnboarding(onb);
-          ctx.ui.setWidget("eto-route", [
-            "╭── 🎯 试试第一条任务 ───────────────╮",
-            "│  配置完成！描述任务即可。         │",
-            "│  试试：「帮我写个 Python 程序」    │",
-            "╰────────────────────────────────────╯"
-          ]);
-          return { systemPrompt: "" };
-        }
-        ctx.ui.setWidget("eto-route", [
-          "╭── 选择 LLM Provider ─────────────╮",
-          "│  请回复数字 1、2 或 3             │",
-          "╰────────────────────────────────────╯"
-        ]);
-        return { systemPrompt: "" };
-      }
-      if (onb.current_step === 3) {
-        // T3-T4: first real task detected
-        onb.first_task_done = true;
-        onb.current_step = 4;
-        saveOnboarding(onb);
-        ctx.ui.notify("🎉 首次配置完成！之后直接说话就行。", "info");
-      }
+    if (!onb.seen_welcome) {
+      onb.seen_welcome = true;
+      saveOnboarding(onb);
+      return { systemPrompt: "" };
     }
 
     stitchFailureCount = 0; // 重置熔断器

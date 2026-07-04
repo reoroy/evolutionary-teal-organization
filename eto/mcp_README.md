@@ -49,10 +49,17 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | python -m eto.mcp_server
 ```json
 {
   "peers": {
-    "reasonix": {
+    "custom_agent": {
       "provider": "mcp",
-      "model": "[\"python\", \"-m\", \"reasonix_mcp_server\"]"
+      "mcp_server": ["python", "-m", "my_agent_mcp_server"],
+      "mcp_tool": "agent_review"
     }
   }
 }
 ```
+
+| 字段 | 说明 | 默认 |
+|:-----|:------|:------|
+| `provider` | 固定 `"mcp"` | — |
+| `mcp_server` | 启动 MCP Server 的命令数组 | 必填 |
+| `mcp_tool` | 调用的工具名 | `"agent_review"` |

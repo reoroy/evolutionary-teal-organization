@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# ETO Installer — 仅安装 ETO 插件，不碰系统配置
+# ETO Installer — 一键安装 + 初始化
 $ErrorActionPreference = "Stop"
 $GH_REPO = "https://github.com/reoroy/evolutionary-teal-organization"
 
@@ -23,10 +23,26 @@ if (Test-Path "$target\.git") {
     Write-Host "  OK" -ForegroundColor Green
 }
 
-Write-Host "[3/3] Registering ETO extension..." -ForegroundColor Cyan
+Write-Host "[3/3] Installing ETO..." -ForegroundColor Cyan
+Push-Location $target
+
+# Install Python package
+pip install -e eto/ 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: pip install failed" -ForegroundColor Yellow }
+
+# Register Pi extension
 pi install "$target\eto\extensions\eto.ts" 2>&1 | Out-Null
+if ($LASTEXITCODE -ne 0) { Write-Host "  FAIL: pi install failed" -ForegroundColor Red; exit 1 }
+
+# Bootstrap (profiles + config)
+python3 -c "import sys; sys.path.insert(0,'.'); from eto.bootstrap import run; run()" 2>&1 | Out-Null
+
+Pop-Location
 Write-Host "  OK" -ForegroundColor Green
 
 Write-Host ""
-Write-Host "  Done! Run: pi" -ForegroundColor Green
-Write-Host "  (ETO extension auto-loads. Configure provider via pi login or --provider)" -ForegroundColor Gray
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host " ETO 安装完成！" -ForegroundColor Green
+Write-Host " 首次启动 pi 将引导你选择 LLM Provider。" -ForegroundColor Gray
+Write-Host " 如需卸载: ./uninstall.ps1" -ForegroundColor Gray
+Write-Host "========================================" -ForegroundColor Cyan

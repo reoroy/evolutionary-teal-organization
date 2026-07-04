@@ -96,15 +96,19 @@ def _call_claude(model: str, system: str, prompt: str) -> str:
             return "".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
     except: return ""
 
-def _call_mcp_agent(server_cmd_json: str, system: str, prompt: str) -> str:
-    """通过 MCP Client 调其他 Agent"""
+def _call_mcp_agent(config_json: str, system: str, prompt: str) -> str:
+    """通过 MCP Client 调其他 Agent 的工具评分"""
     try:
         import sys as _sys
         _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
         from eto.mcp_client import sync_call_mcp
-        cmd = json.loads(server_cmd_json)
+        cfg = json.loads(config_json)
+        cmd = cfg.get("mcp_server", [])
+        tool = cfg.get("mcp_tool", "agent_review")
+        if not cmd:
+            return ""
         args = {"system": system, "prompt": prompt}
-        result = sync_call_mcp(cmd, "agent_review", args)
+        result = sync_call_mcp(cmd, tool, args)
         if result:
             return json.dumps(result, ensure_ascii=False)
     except: pass
@@ -113,7 +117,10 @@ def _call_mcp_agent(server_cmd_json: str, system: str, prompt: str) -> str:
 def _call_peer(peer_name: str, system: str, prompt: str) -> str:
     """按 peer 配置路由到对应 provider"""
     cfg = _load_peer_config().get(peer_name, DEFAULT_PEER_CONFIG.get(peer_name, DEFAULT_PEER_CONFIG["researcher"]))
-    return _call_provider(cfg.get("provider", "ollama"), cfg.get("model", MODEL), system, prompt)
+    provider = cfg.get("provider", "ollama")
+    if provider == "mcp":
+        return _call_mcp_agent(json.dumps(cfg, ensure_ascii=False), system, prompt)
+    return _call_provider(provider, cfg.get("model", MODEL), system, prompt)
 
 def _extract_json(text: str) -> dict | None:
     import re

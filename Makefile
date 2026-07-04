@@ -89,7 +89,14 @@ endif
 .PHONY: setup install-py bootstrap
 
 setup: install-py bootstrap
-	@echo "✅ ETO 就绪，敲 eto 启动"
+	@echo ""
+	@echo "╔══════════════════════════════════════════╗"
+	@echo "║  ETO 安装完成！                           ║"
+	@echo "║                                          ║"
+	@echo "║  首次启动 pi 将引导你选择 LLM Provider。  ║"
+	@echo "║  之后直接描述任务即可。                   ║"
+	@echo "╚══════════════════════════════════════════╝"
+	@echo ""
 
 install-py:
 	pip install -e eto/

@@ -2,30 +2,30 @@
 
 > Pi 是 Agent 引擎。ETO 不是另一个引擎——ETO 是让多个引擎协作的制度。
 
-ETO 是青色组织原则翻译成 AI Agent 系统的**编排层**——跑在 [Pi CLI](https://github.com/earendil-works/pi-coding-agent) 之上，做共识、路由、安检和上下文传递。
-
-**一句话：给你的 AI Agent 装上三镜路由 + 同侪共识 + 智子安检。**
+ETO 是跑在 [Pi CLI](https://github.com/earendil-works/pi-coding-agent) 上的编排层：三镜路由自动分类任务、同侪共识三阶段评审、智子安检拦截危险操作。不写框架，只缝已有工具。
 
 ---
 
-## 快速开始
+## 安装
 
-### 1. 安装 Pi CLI（Agent 运行时）
+### 前提：装 Pi CLI
+
+Pi CLI 是 Agent 运行时引擎，ETO 作为其扩展运行：
 
 ```bash
-# Node.js (推荐)
 npm install -g @earendil-works/pi-coding-agent
-
-# 或 uv
-uv tool install @earendil-works/pi-coding-agent
-
-# 验证
-pi --help
 ```
 
-Pi CLI 是 Agent 引擎，提供 TUI、工具调用、会话管理、provider 抽象。ETO 跑在 Pi 之上。
+验证：`pi --help`
 
-### 2. 一键安装 ETO
+### 装 ETO
+
+**Mac / Linux / WSL:**
+```bash
+git clone https://github.com/reoroy/evolutionary-teal-organization.git
+cd evolutionary-teal-organization
+make setup
+```
 
 **Windows (cmd):**
 ```cmd
@@ -38,74 +38,67 @@ install.cmd
 irm https://raw.githubusercontent.com/reoroy/evolutionary-teal-organization/main/install.ps1 | iex
 ```
 
-**Mac / Linux / WSL:**
-```bash
-make setup
-```
+安装脚本自动完成：clone → pip install → pi register extension → bootstrap 初始化。
 
-安装完成后，启动 Pi 即自动加载 ETO：
+### 验证
 
 ```bash
-# 本地模型（Ollama）
-pi
-
-# 或走 Claude 代理
-run-eto.cmd          # Windows
-./run-eto.ps1        # PowerShell
+python eto/stitches/test.py
+# 期望输出: 11 PASS
 ```
 
-### 3. 首次启动
+### 卸载
 
-启动后 ETO 会引导你：
-1. 选择 LLM Provider（DeepSeek / Ollama / 跳过）
-2. 然后直接描述你的第一条任务
+```bash
+# Windows
+uninstall.cmd          # 或 ./uninstall.ps1
+
+# 手动
+pi remove eto/extensions/eto.ts
+rm -rf ~/.eto ~/.pi/etoprofiles ~/.pi/eto-config.json
+# 项目目录直接删除即可
+```
 
 ---
 
-## 核心功能
+## 功能
 
 ### 三镜路由 — 任务自动分类
 
-你说一句话，ETO 自动分析任务类型并路由到合适的处理路径：
+你说一句话，ETO 自动判断任务类型：
 
-```mermaid
-flowchart LR
-  A[你的任务] --> B{三镜路由}
-  B -->|知识问答| C[direct 直接回答]
-  B -->|编码/实现| D[plan 多步规划]
-  B -->|危险操作| E[consensus 共识审批]
-```
+| 你说的 | 路由 | 行为 |
+|:-------|:-----|:------|
+| `"什么是 Rust 的 ownership？"` | direct → knowledge | 直接回答 |
+| `"帮我写个 Python 爬虫"` | plan → code | 拆步执行 |
+| `"删除生产数据库"` | consensus | 触发三阶段共识 |
 
-**示例：**
-
-| 你说的 | 路由结果 | 行为 |
-|:-------|:---------|:-----|
-| "什么是 Rust 的 ownership？" | direct → researcher | 直接回答 |
-| "帮我写一个 Python 爬虫" | plan → coder | 多步执行 |
-| "删除生产数据库" | consensus → auditor | 触发共识审批 |
-
-路由后端可配置：DeepSeek API（语义路由）或 Ollama 本地模型（关键词降级）。
+路由后端可配置 LLM 语义路由或关键词降级（`~/.pi/eto-config.json`）。
 
 ### 同侪共识 — 三阶段评审
 
-对风险操作，三个 AI 角色独立评审，杜绝单点决策：
+风险操作由三个 AI peer 独立评分、审议、终审：
 
-```
-T1: 独立评分
-   researcher ──→ {score, concern, suggestion}
-   coder      ──→ {score, concern, suggestion}
-   auditor    ──→ {score, concern, suggestion}
+```bash
+# 命令行调 consensus
+echo '{"fn":"peer_review","args":["部署到生产环境不备份不测试",["researcher","coder","auditor"]]}' \
+  | python eto/stitches/consensus/vote.py
 
-T2: 审议（分歧 > 0.2 时触发）
-   各 peer 看到其他人的意见，重新评分
-   最多 2 轮，防止无限循环
-
-T3: 终审（审议后分歧仍大）
-   auditor 做终审裁决 → approve / revise / reject
-   输出改进行动项
+# 返回: status, final_score, votes (含 concern/suggestion),
+#        deliberation (rounds, verdict), actions
 ```
 
-每个 peer 可配置不同的 LLM provider：
+三个阶段：
+
+| 阶段 | 过程 |
+|:-----|:------|
+| T1 独立评分 | 三个 peer 用角色专用 prompt 各自打分 |
+| T2 审议 | 分歧 > 0.2 时 peer 看到他人意见后重新评分 |
+| T3 终审 | 审议后分歧仍大 → auditor 终审裁决 |
+
+### 多模型 — 各 peer 用不同 LLM
+
+每个 peer 可独立配置 provider：
 
 ```json
 {
@@ -117,11 +110,15 @@ T3: 终审（审议后分歧仍大）
 }
 ```
 
-配置在 `~/.pi/eto-config.json`，改完自动生效。
+配置在 `~/.pi/eto-config.json`，热加载，无需重启。
+
+| provider | 要求 |
+|:---------|:------|
+| `ollama` | 本地 Ollama 服务（localhost:11434） |
+| `deepseek` | 环境变量 `DEEPSEEK_API_KEY` |
+| `claude` | 环境变量 `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`（经 Hermes 代理） |
 
 ### 智子安检 — 安全门禁
-
-可配置规则引擎，在危险操作前拦截：
 
 ```json
 {
@@ -132,23 +129,25 @@ T3: 终审（审议后分歧仍大）
 }
 ```
 
-| 动作 | 效果 |
-|:-----|:------|
-| `confirm` | 弹窗确认，你决定 |
-| `block` | 直接拦截，不弹窗 |
-| `log` | 放行但记录审计日志 |
+动作：`confirm`（弹窗确认） / `block`（直接拦截） / `log`（放行+审计）。
 
-配置：`~/.pi/eto-sentinel.json`，热重载。
+配置 `~/.pi/eto-sentinel.json`，热重载（对话中输入 `/sentinel-reload`）。
 
-### MCP 集成 — 调其他 Agent / 被其他 Agent 调
+---
 
-ETO 提供 MCP Server，让任何 MCP 客户端（Claude Code、Cursor 等）直接调用 ETO 的共识和路由：
+## 多 Agent 集成（MCP）
+
+ETO **同时是 MCP Server 和 MCP Client**，双向接入 Agent 生态。
+
+### ETO 作为 MCP Server
+
+其他 Agent（Claude Code、Cursor 等）可直接调 ETO 的共识和路由：
 
 ```json
 // .mcp.json
 {
   "mcpServers": {
-    "eto": {
+    "eto-mcp": {
       "command": "python",
       "args": ["-m", "eto.mcp_server"]
     }
@@ -158,149 +157,92 @@ ETO 提供 MCP Server，让任何 MCP 客户端（Claude Code、Cursor 等）直
 
 **暴露的工具：**
 
-| 工具 | 作用 |
-|:-----|:------|
-| `eto_consensus` | 对执行计划做三阶段共识评分 |
-| `eto_route` | 三镜路由分析任务 |
-| `eto_peer_config` | 查看 peer→provider 映射 |
+| MCP 工具 | 作用 | 调用参数 |
+|:---------|:-----|:---------|
+| `eto_consensus` | 三阶段共识评分 | `plan`, `peers` |
+| `eto_route` | 三镜路由分类 | `task` |
+| `eto_peer_config` | 查看 peer 配置 | — |
 
-**peer 也可以配置走 MCP 调其他 Agent：**
+```bash
+# 验证 MCP Server 启动
+python -m eto.mcp_server
+```
+
+### ETO 作为 MCP Client
+
+Peer 可以通过 MCP 调另一个 Agent 来评分：
 
 ```json
 {
   "peers": {
-    "auditor": {
+    "security_auditor": {
       "provider": "mcp",
-      "mcp_server": ["python", "-m", "auditor_agent_mcp"],
+      "mcp_server": ["python", "-m", "my_auditor_agent_mcp"],
       "mcp_tool": "audit_review"
     }
   }
 }
 ```
 
-这意味着你可以让 Reasonix、Claude Code 或其他 Agent 参与 ETO 的共识评审。
-
----
-
-## 日常使用
-
-### 启动
-
-```bash
-# 交互模式（TUI）
-pi
-
-# 走 Claude 代理
-run-eto.cmd
-
-# 一次性查询
-pi -p "帮我分析这段代码的性能瓶颈"
-
-# 指定 provider
-pi --provider deepseek --model deepseek-chat
-```
-
-### 智子命令
-
-在对话中输入：
-
-| 命令 | 作用 |
+| 字段 | 说明 |
 |:-----|:------|
-| `/sentinel-reload` | 热重载安检配置 |
-| `/metrics` | 查看运行统计 |
+| `mcp_server` | 启动 MCP Server 的命令数组（必填） |
+| `mcp_tool` | 调用的工具名（默认 `"agent_review"`） |
 
-### 开发命令（ETO 自身开发）
-
-如果你要修改 ETO 本身：
-
-```bash
-# 先安装开发依赖
-pip install -e eto/
-
-# 运行测试
-python eto/stitches/test.py
-
-# 发布
-make release V=v0.x.0
-```
-
-完整的开发工作流见 [开发流程文档](.claude/rules/eto-guide.md)。
+对方 MCP Server 只需暴露一个工具接受 `{system, prompt}` 参数并返回 JSON。
 
 ---
 
-## 卸载
+## 命令参考
 
-```bash
-# Windows
-uninstall.cmd
+### 运行时
 
-# PowerShell
-./uninstall.ps1
+| 操作 | 命令 |
+|:-----|:------|
+| 启动 TUI | `pi` |
+| 一次性查询 | `pi -p "你的问题"` |
+| 指定 provider | `pi --provider deepseek` |
+| 走 Claude 代理 | `./run-eto.cmd` |
+| 智子重载 | 对话中输入 `/sentinel-reload` |
+| 运行统计 | 对话中输入 `/metrics` |
 
-# 手动
-pi remove eto/extensions/eto.ts
-rm -rf ~/.eto ~/.pi/etoprofiles ~/.pi/eto-config.json
-```
+### 开发（修改 ETO 自身）
+
+| 操作 | 命令 |
+|:-----|:------|
+| 测试 | `python eto/stitches/test.py` |
+| 发布 | `make release V=v0.x.0` |
 
 ---
 
-## 架构（5 组件，<1000 行）
+## 架构
 
 ```
                          ┌──────────────┐
-                         │   智子守卫   │  ← 安全门禁 + 流程强制器
+                         │   智子守卫   │
                          └──────┬───────┘
                                 │
-Agent A ──→ 三镜路由 ──→ 协调员选举 ──→ 同侪共识 ──→ Pi 执行
-Agent B ──→ (按 Profile 匹配) (match×空闲率) (peer 评分)    │
-Agent C ──→                                            TealContext
-                                                       (共享上下文池)
+三镜路由 ──→ 协调员选举 ──→ 同侪共识 ──→ Pi 执行
+(按任务    (match×空闲率)  (peer 评分)    │
+ 分类)                              TealContext
                         ↓
                Agent Profile 注册表
-               (specialty/style/ICP/skills/MCP_tools)
 ```
 
-| 组件 | 做的事 | 不做什么 |
-|:-----|:-------|:---------|
-| **三镜路由** | 分析任务→匹配 Profile→分给最合适的 Agent | 不写 Agent 逻辑 |
-| **协调员选举** | 按匹配度+空闲率选临时负责人 | 不建固定层级 |
-| **同侪共识** | 三阶段评分→审议→终审 | 不搞一言堂 |
-| **智子守卫** | 安全检查 + 强制流程 | 不替 Agent 做决定 |
-| **TealContext** | 共享上下文池，Agent 互相看见 | 不取代 Pi 的会话管理 |
+| 组件 | 位置 | 做的事 |
+|:-----|:------|:-------|
+| 路由 + 安检 + 入口 | `extensions/eto.ts` | Pi Extension，~200 行 |
+| 共识 | `stitches/consensus/vote.py` | 三阶段评分→审议→终审 |
+| 选举 | `stitches/election/elect.py` | 匹配度×空闲率推举 |
+| 执行 | `stitches/comms/a2a.py` | 多步任务+上下文传递 |
+| MCP Server | `mcp_server.py` | FastMCP，暴露 ETO 工具 |
+| MCP Client | `mcp_client.py` | 调其他 Agent 的 MCP 工具 |
 
-### 铁律
+### 原则
 
-1. **Pi 有的绝对不写** — TUI、工具调用、会话管理、provider 抽象、Agent 运行时
-2. **ETO 只写编排层** — 路由、选举、共识、安检、上下文传递
-3. **代码量 < 1000 行** — 超过说明在造轮子
-4. **先问"Pi 有没有"** — 有就直接用
-
-### 历史教训
-
-- ❌ 写了 3156 行 Python — 其中 95% 是 Pi 已有的功能
-- ✅ 删到 TypeScript Extension + Python stitches — 才意识到 ETO 的正确形态
-- **核心：ETO 做薄编排层跑在 Pi 之上，不是重写整个栈。**
-
----
-
-## 项目结构
-
-```
-eto/
-├── extensions/eto.ts        — Pi Extension（入口 + 路由 + 安检）
-├── mcp_server.py            — MCP Server（供其他 Agent 调用）
-├── mcp_client.py            — MCP Client（调其他 Agent）
-├── stitches/
-│   ├── consensus/vote.py    — 三阶段共识（评分→审议→终审）
-│   ├── election/elect.py    — 协调员选举
-│   ├── comms/a2a.py         — 多步任务执行
-│   └── test.py              — 集成测试
-├── bootstrap/               — 首次初始化
-├── install.cmd / .ps1       — 一键安装
-├── uninstall.cmd / .ps1     — 一键卸载
-├── run-eto.cmd / .ps1       — 启动脚本（走 Claude 代理）
-└── verify-eto.cmd           — 安装验证
-```
+- **Pi 有的不写** — TUI、工具调用、会话管理、provider 抽象直接用 Pi 的
+- **编排层 < 1000 行** — 超过说明在造轮子
+- **每个 Agent 是平等 peer** — 不降级、不设固定层级
 
 ---
 
@@ -311,7 +253,8 @@ eto/
 | `~/.pi/eto-config.json` | 路由 provider + peer→provider 映射 |
 | `~/.pi/eto-sentinel.json` | 智子安检规则 |
 | `~/.pi/etoprofiles/profiles.json` | Agent Profile 数据 |
-| `~/.eto/memory/` | 引导进度 + 经验数据 + 审计日志 |
+| `~/.eto/memory/` | 经验 + 审计日志 |
+| `.mcp.json` | MCP Server 注册 |
 
 ---
 
