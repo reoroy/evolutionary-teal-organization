@@ -447,16 +447,19 @@ export default function (pi: ExtensionAPI) {
       saveOnboarding(onb);
       ctx.ui.setWidget("eto-route", [
         "╭────────────────────────────────────────╮",
+        "│  Evolutionary-Teal-Organization        │",
+        "│  现在，我们是同志了。                  │",
+        "│  Now, we are comrades.                 │",
         "│                                        │",
-        "│   Evolutionary-Teal-Organization       │",
+        "│  架构优于单体                          │",
+        "│  architecture > agent                   │",
+        "│  无序 · 三生 · 有机                    │",
+        "│  Entropy · Trinity · Organic           │",
         "│                                        │",
-        "│   /ETO — 现在，我们是同志了            │",
-        "│   /ETO — Now, we are comrades.         │",
-        "│                                        │",
-        "│   架构优于单体                         │",
-        "│   architecture > agent                  │",
-        "│   无序 · 三生 · 有机                   │",
-        "│   Entropy · Trinity · Organic          │",
+        "│  三镜路由 → 任务自动分配              │",
+        "│  同侪共识 → 三阶段评分+审议+终审      │",
+        "│  多模型   → 各 peer 配不同 LLM        │",
+        "│  MCP 集成 → 调其他 Agent / 被调      │",
         "│                                        │",
         "╰────────────────────────────────────────╯"
       ]);
