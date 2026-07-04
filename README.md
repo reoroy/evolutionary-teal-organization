@@ -69,9 +69,12 @@ eto-mesh status           # 确认在线
 > - 工作目录: 项目根路径
 > - 目的: 提供 eto_consensus / eto_route / eto_memory_write 等工具
 >
-> 运行 `pip install -e .` 安装依赖，
-> 运行 `eto-mesh join` 注册到 Mesh，
-> 运行 `eto-mesh status` 确认在线。
+> 运行以下命令安装并注册：
+> ```bash
+> pip install git+https://github.com/reoroy/evolutionary-teal-organization.git
+> eto-mesh join
+> eto-mesh status
+> ```
 
 ### 卸载
 
@@ -258,7 +261,7 @@ echo '{"fn":"peer_review","args":["部署到生产环境不备份不测试",["re
 
 ## ETO Mesh — Agent 协作网络
 
-v0.6.0 新增 Agent Registry + 跨平台 CLI + 可配置调度 + 竞标协议，让多个 Agent 互相发现和协作。
+Agent Registry + 跨平台 CLI + 可配置调度 + 竞标协议 + LangGraph 工作流，让多个 Agent 互相发现、协商和协作。
 
 ### Agent Registry
 
@@ -344,6 +347,33 @@ Agent 不再被硬分配，而是收到任务后自评竞标：
 ```
 
 见 [`docs/teal-runtime-arch.md`](docs/teal-runtime-arch.md)。
+
+### LangGraph 工作流 (Phase B)
+
+复杂任务自动拆分为多 Agent 协作流程。Agent 先用 LLM 设计 2-3 种协作方案，各自投票 + 自选配置，然后动态构建 LangGraph 图执行：
+
+```
+任务 → generate_proposals() → 2-3 方案
+     → vote_on_proposals() → 每个 Agent 独立评分 + 自选 prompt/skills/tools
+     → 选标 → build_graph() → LangGraph StateGraph
+     → execute_workflow()
+       ├── 每步调 dispatch_with_spec
+       ├── 条件边（auditor 失败 → 重试）
+       ├── 上一步输出注入下一步上下文
+       └── 结果写 shared_memory
+```
+
+依赖：`langgraph>=0.2.0`
+
+### 时间注入
+
+ETO 在每次路由时注入当前时间（北京时间 Asia/Shanghai），让 Agent 感知时间上下文：
+
+```
+当前时间: 2026/7/4 15:30:00
+```
+
+路由输出中自动包含时间戳，适用于需要时间感知的任务（日志审计、定时操作、排期计划等）。
 
 ### context_block → agentmemory
 
