@@ -37,6 +37,15 @@ function loadProfiles(): AgentProfile[] {
 
 const AGENT_PROFILES = loadProfiles();
 
+async function tryBidding(task: string, gewu: string): Promise<{ winner: AgentProfile; confidence: number; bids: any[] } | null> {
+  const taskSpec = JSON.stringify({ type: gewu, title: task.slice(0, 100), description: task.slice(0, 200) });
+  const profiles = JSON.stringify(AGENT_PROFILES.map(p => ({ name: p.name, specialty: p.specialty, label: p.label, weights: p.weights })));
+  const result = await callStitchAsync("bidding.protocol", "run_bidding", taskSpec, profiles);
+  if (!result || "_error" in result || (result as any).fallback) return null;
+  const winner = AGENT_PROFILES.find(p => p.name === (result as any).winner?.name);
+  return winner ? { winner, confidence: (result as any).confidence as number, bids: (result as any).bids as any[] } : null;
+}
+
 function matchAgentsForRoute(gewu: string): AgentProfile[] {
   return AGENT_PROFILES
     .map(p => ({ profile: p, score: p.weights[gewu] || 0 }))
@@ -447,8 +456,17 @@ async function tryDispatchToMCPAgent(peerName: string, task: string): Promise<st
   if (!Array.isArray(cmd) || cmd.length === 0) return null;
 
   try {
-    const cmdJson = JSON.stringify(cmd);
-    const result = await callStitchAsync("mcp_dispatch", "dispatch", cmdJson, tool, task);
+    const spec: Record<string, any> = { server_cmd: cmd, tool, task };
+    const ds = peerCfg.dispatch_spec;
+    if (ds) {
+      if (ds.system_prompt) spec.system_prompt = ds.system_prompt;
+      if (Array.isArray(ds.skills)) spec.skills = ds.skills;
+      if (Array.isArray(ds.mcp_tools)) spec.mcp_tools = ds.mcp_tools;
+      if (ds.response_format) spec.response_format = ds.response_format;
+      if (typeof ds.timeout === "number") spec.timeout = ds.timeout;
+      if (ds.params) spec.params = ds.params;
+    }
+    const result = await callStitchAsync("mcp_dispatch", "dispatch_with_spec", JSON.stringify(spec));
     if (result && !("_error" in result)) {
       return `[MCP Agent: ${peerName}]\n结果: ${JSON.stringify(result, null, 2)}`;
     }
@@ -488,6 +506,56 @@ async function execPlan(task: string, route: RouteResult): Promise<string> {
     return `协调员: ${coordinator}\n共识: ${consensus?.status || "通过"}\n共 ${steps.length} 步\n\n${details}`;
   }
   return `协调员: ${coordinator}, 共 ${steps.length} 步, 共识: ${consensus?.status || "通过"}`;
+}
+
+// ═══════════════════════════════════════════════════
+//  Agent Registry — 本地注册 + 心跳
+// ═══════════════════════════════════════════════════
+
+const REGISTRY_PATH = () => {
+  const dir = join(require("os").homedir(), ".eto");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return join(dir, "registry.json");
+};
+
+function generateAgentId(): string {
+  return `pi-${require("os").hostname().toLowerCase().replace(/[^a-z0-9-]/g, "-")}`;
+}
+
+function loadRegistry(): { version: number; agents: Record<string, any> } {
+  try { return JSON.parse(readFileSync(REGISTRY_PATH(), "utf-8")); }
+  catch { return { version: 1, agents: {} }; }
+}
+
+function saveRegistry(reg: any): void {
+  writeFileSync(REGISTRY_PATH(), JSON.stringify(reg, null, 2), "utf-8");
+}
+
+function registerSelf(): void {
+  const reg = loadRegistry();
+  const id = generateAgentId();
+  reg.agents[id] = {
+    id,
+    platform: "pi",
+    hostname: require("os").hostname(),
+    mcp_endpoint: "python -m eto.mcp_server",
+    capabilities: ["code", "research", "audit"],
+    status: "online",
+    last_seen: new Date().toISOString(),
+  };
+  saveRegistry(reg);
+}
+
+function heartbeat(): void {
+  const reg = loadRegistry();
+  const id = generateAgentId();
+  if (reg.agents[id]) {
+    reg.agents[id].last_seen = new Date().toISOString();
+    reg.agents[id].status = "online";
+  } else {
+    registerSelf();
+  }
+  saveRegistry(reg);
 }
 
 // ═══════════════════════════════════════════════════
@@ -565,6 +633,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     ctx.ui.setWidget("eto-route", ["🦋 ETO 就绪", "描述任务开始"]);
+    registerSelf();
   });
 
   pi.registerCommand("eto", {
@@ -608,9 +677,30 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("agents", {
+    description: "列出所有已注册 Agent 及其状态",
+    handler: async (_args, ctx) => {
+      const reg = loadRegistry();
+      const agents = Object.values(reg.agents);
+      if (agents.length === 0) {
+        ctx.ui.notify("没有已注册的 Agent", "info");
+        return;
+      }
+      const now = new Date();
+      const lines = agents.map((a: any) => {
+        const lastSeen = new Date(a.last_seen);
+        const diffMs = now.getTime() - lastSeen.getTime();
+        const status = diffMs < 120000 ? "在线" : "离线";
+        return `  ${(a.id || "?").padEnd(22)} ${(a.platform || "?").padEnd(8)} ${status.padEnd(6)} ${a.last_seen.slice(0, 19).replace("T", " ")}`;
+      });
+      ctx.ui.notify(`📋 Agent Registry (${agents.length}):\n${lines.join("\n")}`, "info");
+    },
+  });
+
   pi.on("before_agent_start", async (event, ctx) => {
     blockCounters.clear();  // 用户新消息 → 逃生门计数归零
     turnCounter++;
+    heartbeat();
 
     // transform rules — 修改 prompt
     if (event.prompt) {
@@ -663,10 +753,11 @@ export default function (pi: ExtensionAPI) {
     ];
 
     if (route.route === "plan") {
-      ctx.ui.notify(`📝 Agent 匹配中...`, "info");
-      const agents = matchAgentsForRoute(route.gewu);
+      ctx.ui.notify(`📝 竞标中...`, "info");
+      const bidResult = await tryBidding(task, route.gewu);
+      const agents = bidResult ? [bidResult.winner] : matchAgentsForRoute(route.gewu);
       const agentNames = agents.map(a => a.name).join(", ");
-      ctx.ui.notify(`👥 Agent: ${agentNames}`, "info");
+      ctx.ui.notify(`👥 Agent: ${agentNames}${bidResult ? ` (竞标 ${(bidResult.confidence * 100).toFixed(0)}%)` : " (关键词降级)"}`, "info");
 
       // Skill Memory: 匹配经验技能
       const matchedSkills = matchSkillsForRoute(route.gewu);

@@ -1,6 +1,6 @@
 # ETO — Evolutionary Teal Organization
 
-> Pi 是 Agent 引擎。ETO 不是另一个引擎——ETO 是让多个引擎协作的制度。
+> Pi 是 Agent 引擎。ETO 不是另一个引擎——ETO 是让多个引擎协作的制度。v0.6.0 新增 Agent Registry + eto-mesh CLI + dispatch_spec + 竞标协议。
 
 ETO 是跑在 [Pi CLI](https://github.com/earendil-works/pi-coding-agent) 上的编排层：三镜路由自动分类任务、同侪共识三阶段评审、智子安检拦截危险操作。不写框架，只缝已有工具。
 
@@ -49,6 +49,39 @@ Bootstrap 写入 Agent Profile、种子经验、**使用指南（`~/.eto/memory/
 ```bash
 python eto/stitches/test.py
 # 期望输出: 17 PASS
+```
+
+## 跨平台安装
+
+### 前置条件
+```bash
+pip install -e .          # 安装 eto-mesh CLI
+eto-mesh join             # 注册本机
+eto-mesh status           # 确认在线
+```
+
+### Claude Code
+```bash
+bash scripts/install-eto-claude.sh
+# → 重启 Claude Code 后 MCP tools 自动可用
+```
+
+### Reasonix
+```bash
+bash scripts/install-eto-reasonix.sh
+# → Reasonix 可直接调 eto_consensus / eto_route 等工具
+```
+
+### Hermes (Linux)
+```bash
+bash scripts/install-eto-hermes.sh
+# → 定时心跳到 registry，其他 Agent 可见
+```
+
+### 验证
+```bash
+eto-mesh status
+# → 应列出所有已注册 Agent
 ```
 
 ### 卸载
@@ -234,6 +267,107 @@ echo '{"fn":"peer_review","args":["部署到生产环境不备份不测试",["re
 
 ---
 
+## ETO Mesh — Agent 协作网络
+
+v0.6.0 新增 Agent Registry + 跨平台 CLI + 可配置调度 + 竞标协议，让多个 Agent 互相发现和协作。
+
+### Agent Registry
+
+每个运行 ETO 的 Agent 在 `~/.eto/registry.json` 中登记自己：
+
+```json
+{
+  "version": 1,
+  "agents": {
+    "pi-ws-5090": {
+      "id": "pi-ws-5090", "platform": "pi",
+      "hostname": "ws-5090",
+      "mcp_endpoint": "python -m eto.mcp_server",
+      "capabilities": ["code", "research", "audit"],
+      "status": "online",
+      "last_seen": "2026-07-04T12:00:00Z"
+    }
+  }
+}
+```
+
+**自动维护：** Pi 扩展在 `session_start` 时注册，每次用户消息更新心跳。
+
+### /agents 命令
+
+对话中查看 Mesh 中所有已注册 Agent：
+
+```
+📋 Agent Registry (2):
+  pi-ws-5090                pi       在线    2026-07-04 12:00:00
+  reasonix-alpha            reasonix 在线    2026-07-04 11:58:00
+```
+
+### eto-mesh CLI
+
+平台无关的命令行工具，任何环境都可注册和查看：
+
+```bash
+eto-mesh join          # 注册本机到 Mesh
+eto-mesh status        # 查看所有 Agent（rich 表格）
+eto-mesh --help        # 帮助
+```
+
+自动检测平台（pi / reasonix / claude），生成 `{platform}-{hostname}` 格式 ID。
+
+### 可配置调度 (dispatch_spec)
+
+调用 MCP Agent 时可指定完整调度规范，不只是传任务文本：
+
+```json
+{
+  "peers": {
+    "hermes": {
+      "provider": "mcp",
+      "mcp_server": ["python", "-m", "eto.mcp_server"],
+      "mcp_tool": "eto_consensus",
+      "dispatch_spec": {
+        "system_prompt": "你是一个严格的安全审计员",
+        "skills": ["sentinel-rules"],
+        "mcp_tools": ["eto_consensus", "eto_memory_read"],
+        "response_format": "json",
+        "timeout": 30000,
+        "params": {
+          "plan": "删除生产数据库",
+          "peers": ["researcher", "coder", "auditor"]
+        }
+      }
+    }
+  }
+}
+```
+
+不配 `dispatch_spec` 时降级为原始行为（只传 task）。
+
+### 竞标协议 (Phase A)
+
+Agent 不再被硬分配，而是收到任务后自评竞标：
+
+```
+任务 → 发布 TaskSpec → Agent 自评 fit → 提交标书 → 协调员选标 → 执行
+                                                                  ↕ 无人竞标时
+                                                           关键词匹配 (fallback)
+```
+
+见 [`docs/teal-runtime-arch.md`](docs/teal-runtime-arch.md)。
+
+### context_block → agentmemory
+
+每次执行前注入的 TealContext 优先从 agentmemory MCP 拉数据（跨 Agent 中央记忆），不可用时降级本地文件：
+
+```
+context_block(n=5)
+  → agentmemory (memory_recall / memory_smart_search) → 格式化 → prompt 注入
+  → fallback: ~/.eto/shared_memory/*.json
+```
+
+---
+
 ## 多 Agent 集成（MCP + Shared Memory）
 
 ETO **同时是 MCP Server 和 MCP Client**，双向接入 Agent 生态，并内置共享记忆系统。
@@ -332,7 +466,9 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
 | 走 Claude 代理 | `./run-eto.cmd` |
 | 智子重载 | `/sentinel-reload`（对话中） |
 | 运行统计 | `/metrics`（对话中） |
+| 列出 Agent | `/agents`（对话中） |
 | ETO 品牌信息 | `/eto`（对话中） |
+| ETO Mesh 状态 | `eto-mesh status`（终端） |
 
 ### 开发（修改 ETO 自身）
 
@@ -357,25 +493,33 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
 ## 架构
 
 ```
-                         ┌──────────────┐
-                         │   智子守卫   │
-                         └──────┬───────┘
-                                │
-三镜路由 ──→ 协调员选举 ──→ 同侪共识 ──→ Pi 执行
-(按任务    (match×空闲率)  (peer 评分)    │
- 分类)                              TealContext
-                        ↓
-               Agent Profile 注册表
+                             ┌──────────────┐
+                             │   智子守卫   │
+                             └──────┬───────┘
+                                    │
+          Agent Registry ←── 三镜路由 ──→ 协调员选举 ──→ 同侪共识 ──→ Pi 执行
+               │              (按任务    (竞标/匹配)   (peer 评分)    │
+               │               分类)                           TealContext
+               ↓                                                    │
+         eto-mesh CLI ←── dispatch_spec ──→ MCP Agent ←─────────────┘
+               │                              │
+               ↓                              ↓
+         agentmemory ←── context_block ──── agentmemory
 ```
 
 | 组件 | 位置 | 做的事 |
 |:-----|:------|:-------|
-| 路由 + 安检 v2 + 入口 | `extensions/eto.ts` | Pi Extension，~740 行 |
+| 路由 + 安检 v2 + 入口 | `extensions/eto.ts` | Pi Extension，~820 行 |
 | 共识 | `stitches/consensus/vote.py` | 三阶段评分→审议→终审 |
-| 选举 | `stitches/election/elect.py` | 匹配度×空闲率推举 |
+| 选举 | `stitches/election/elect.py` | 匹配度×空闲率推举/竞标选标 |
 | 执行 | `stitches/comms/a2a.py` | 多步任务+上下文传递 |
 | MCP Server | `mcp_server.py` | FastMCP，暴露 ETO 工具 |
 | MCP Client | `mcp_client.py` | 调其他 Agent 的 MCP 工具 |
+| Agent Registry | `extensions/eto.ts` | 注册表 + 心跳 + `/agents` |
+| Mesh CLI | `cli.py` | `eto-mesh join/status` |
+| dispatch_spec | `stitches/mcp_dispatch.py` | `dispatch_with_spec()` |
+| 竞标协议 | `stitches/bidding/protocol.py` | `run_bidding()` (Phase A) |
+| 共享记忆 | `stitches/memory/shared_memory.py` | KV + agentmemory context_block |
 
 ### 原则
 
@@ -389,9 +533,10 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
 
 | 文件 | 用途 |
 |:-----|:------|
-| `~/.pi/eto-config.json` | 路由 provider + peer→provider 映射 |
+| `~/.pi/eto-config.json` | 路由 provider + peer→provider 映射 + dispatch_spec |
 | `~/.pi/eto-sentinel.json` | 智子安检规则 |
 | `~/.pi/etoprofiles/profiles.json` | Agent Profile 数据 |
+| `~/.eto/registry.json` | Agent 注册表（自动维护） |
 | `~/.eto/memory/` | 经验 + 审计日志 + 使用指南 |
 | `.mcp.json` | MCP Server 注册 |
 

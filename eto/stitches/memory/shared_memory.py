@@ -6,7 +6,7 @@
 TypeScript 端 (pi-team-agents) 和 Python 端 (ETO stitches) 读写同一份数据。
 MCP Server 通过 eto_memory_write/read 暴露给外部 Agent。
 """
-import json, os, sys, time
+import json, os, shutil, sys, time
 from pathlib import Path
 
 MEM_DIR = Path.home() / ".eto" / "shared_memory"
@@ -56,8 +56,49 @@ def delete(key: str):
     if path.exists():
         path.unlink()
 
+_AGENTMEMORY_CMD = os.environ.get("ETO_AGENTMEMORY_CMD", "agentmemory-mcp").split()
+
+def _agentmemory_available() -> bool:
+    """检查 agentmemory MCP server 是否可调"""
+    return shutil.which(_AGENTMEMORY_CMD[0]) is not None
+
+def _context_from_agentmemory(n: int = 5) -> str | None:
+    """通过 MCP 调 agentmemory，返回格式化上下文"""
+    try:
+        from eto.mcp_client import sync_call_mcp
+        result = sync_call_mcp(_AGENTMEMORY_CMD, "memory_recall", {"category": "eto_context", "limit": n})
+        if result and result.get("memories"):
+            memories = result["memories"]
+            parts = ["## TealContext (agentmemory)"]
+            for m in memories[:n]:
+                content = m.get("content", {})
+                if isinstance(content, str):
+                    try: content = json.loads(content)
+                    except: pass
+                text = json.dumps(content, ensure_ascii=False)[:200] if isinstance(content, dict) else str(content)[:200]
+                ts = m.get("created_at", "")[:19].replace("T", " ") if m.get("created_at") else ""
+                parts.append(f"- [{ts}] {text}")
+            return "\n".join(parts)
+
+        result = sync_call_mcp(_AGENTMEMORY_CMD, "memory_smart_search", {"query": "", "limit": n})
+        if result and result.get("results"):
+            results = result["results"]
+            parts = ["## TealContext (agentmemory)"]
+            for r in results[:n]:
+                content = r.get("content", {})
+                text = json.dumps(content, ensure_ascii=False)[:200] if isinstance(content, dict) else str(content)[:200]
+                parts.append(f"- {text}")
+            return "\n".join(parts)
+    except: pass
+    return None
+
 def context_block(n: int = 5) -> str:
-    """返回最近 N 条上下文文本，供 prompt 注入"""
+    """返回最近 N 条上下文文本（优先 agentmemory，降级本地文件）"""
+    if _agentmemory_available():
+        ctx = _context_from_agentmemory(n)
+        if ctx:
+            return ctx
+
     if not MEM_DIR.exists():
         return ""
     files = sorted(MEM_DIR.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
