@@ -374,6 +374,30 @@ function checkCircuitBreaker(): boolean {
 //  三、Plan 执行器
 // ═══════════════════════════════════════════════════
 
+function loadPeerConfig(): Record<string, any> {
+  const cfgPath = join(require("os").homedir(), ".pi", "eto-config.json");
+  try { return JSON.parse(readFileSync(cfgPath, "utf-8")) } catch { return {} }
+}
+
+async function tryDispatchToMCPAgent(peerName: string, task: string): Promise<string | null> {
+  const config = loadPeerConfig();
+  const peerCfg = config?.peers?.[peerName];
+  if (!peerCfg || peerCfg.provider !== "mcp") return null;
+
+  const cmd = peerCfg.mcp_server;
+  const tool = peerCfg.mcp_tool || "agent_execute";
+  if (!Array.isArray(cmd) || cmd.length === 0) return null;
+
+  try {
+    const cmdJson = JSON.stringify(cmd);
+    const result = await callStitchAsync("mcp_dispatch", "dispatch", cmdJson, tool, task);
+    if (result && !("_error" in result)) {
+      return `[MCP Agent: ${peerName}]\n结果: ${JSON.stringify(result, null, 2)}`;
+    }
+  } catch {}
+  return null;
+}
+
 async function execPlan(task: string, route: RouteResult): Promise<string> {
   const candidates: [string, number][] = [
     ["researcher", route.gewu === "research" ? 0.9 : 0.5],
@@ -381,6 +405,12 @@ async function execPlan(task: string, route: RouteResult): Promise<string> {
     ["auditor", route.gewu === "solution" ? 0.9 : 0.5],
   ];
   const coordinator = await electCoordinator(candidates);
+
+  // Try MCP agent dispatch first
+  const mcpResult = await tryDispatchToMCPAgent(coordinator, task);
+  if (mcpResult) return mcpResult;
+
+  // Fallback to current LLM path
   const steps = route.gewu === "code" ? ["调研需求", "编写代码", "审查质量"]
     : route.gewu === "research" ? ["收集信息", "深度分析", "整理报告"]
     : ["执行方案", "审查结果"];
@@ -460,6 +490,9 @@ export default function (pi: ExtensionAPI) {
         "│  同侪共识 → 三阶段评分+审议+终审      │",
         "│  多模型   → 各 peer 配不同 LLM        │",
         "│  MCP 集成 → 调其他 Agent / 被调      │",
+        "│                                        │",
+        "│  配置 Agent: ~/.pi/eto-config.json     │",
+        "│  加入 peers 段指定 mcp_server + tool   │",
         "│                                        │",
         "╰────────────────────────────────────────╯"
       ]);

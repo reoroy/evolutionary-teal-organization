@@ -89,4 +89,17 @@ p = ok(r) and '"status"' in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} consensus simple     无分歧通过")
 all_ok = all_ok and p
 
+# ── MCP dispatch 基础测试 ──────────────────────────
+
+# 空 server_cmd → 优雅降级
+r = run(ROOT / "mcp_dispatch.py", {"fn": "dispatch", "args": ["[]", "tool", "task"]})
+p = ok(r) and ('{}' in r.stdout or '_error' in r.stdout)
+print(f"{OK_MARK if p else FAIL_MARK} mcp dispatch empty   优雅降级")
+
+# 合法参数但无实际 MCP 服务 → 降级不崩溃
+r = run(ROOT / "mcp_dispatch.py", {"fn": "dispatch", "args": [json.dumps(["nonexistent"]), "test", "hi"]})
+p = not ("Traceback" in r.stderr)
+print(f"{OK_MARK if p else FAIL_MARK} mcp dispatch no-srv  不崩溃")
+all_ok = all_ok and p
+
 sys.exit(0 if all_ok else 1)
