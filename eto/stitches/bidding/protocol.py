@@ -54,7 +54,7 @@ def run_bidding(task_spec_json: str, profiles_json: str) -> str:
         return json.dumps({"winner": winner, "confidence": 0.5, "bids": [], "fallback": True}, ensure_ascii=False)
 
     winner = _select_winner(bids, task_spec)
-    return json.dumps({"winner": winner["profile"], "confidence": winner["score"],
+    return json.dumps({"winner": winner["profile"], "confidence": winner["confidence"],
                         "bids": bids, "fallback": False}, ensure_ascii=False)
 
 
@@ -96,7 +96,9 @@ def _evaluate_profile(profile: dict, title: str, desc: str, task_type: str) -> d
 def _select_winner(bids: list, task_spec: dict) -> dict:
     """选标评分：confidence 降序"""
     sorted_bids = sorted(bids, key=lambda b: -b["confidence"])
-    return sorted_bids[0]
+    winner = dict(sorted_bids[0])
+    winner["score"] = winner["confidence"]
+    return winner
 
 
 def _fallback_select(profiles: list, task_type: str) -> dict:

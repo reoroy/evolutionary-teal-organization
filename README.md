@@ -1,6 +1,6 @@
 # ETO — Evolutionary Teal Organization
 
-> Pi 是 Agent 引擎。ETO 不是另一个引擎——ETO 是让多个引擎协作的制度。v0.6.0 新增 Agent Registry + eto-mesh CLI + dispatch_spec + 竞标协议。
+> Pi 是 Agent 引擎。ETO 不是另一个引擎——ETO 是让多个引擎协作的制度。v0.7.0 新增 LangGraph 多 Agent 工作流 + Agent 竞标投票 + agentmemory 上下文互通。
 
 ETO 是跑在 [Pi CLI](https://github.com/earendil-works/pi-coding-agent) 上的编排层：三镜路由自动分类任务、同侪共识三阶段评审、智子安检拦截危险操作。
 
@@ -539,6 +539,19 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
 | `~/.eto/registry.json` | Agent 注册表（自动维护） |
 | `~/.eto/memory/` | 经验 + 审计日志 + 使用指南 |
 | `.mcp.json` | MCP Server 注册 |
+
+---
+
+## 致谢
+
+ETO 使用了以下开源项目：
+
+| 项目 | 用途 | 协议 |
+|:-----|:------|:------|
+| [LangGraph](https://github.com/langchain-ai/langgraph) | 多 Agent 工作流图编排 | MIT |
+| [Pi CLI](https://github.com/earendil-works/pi-coding-agent) | Agent 运行时引擎 | MIT |
+| [Rich](https://github.com/Textualize/rich) | 终端表格渲染（eto-mesh status） | MIT |
+| [ProtoLink](https://github.com/jtemporal/protollm) | Agent 间通信 | Apache 2.0 |
 
 ---
 

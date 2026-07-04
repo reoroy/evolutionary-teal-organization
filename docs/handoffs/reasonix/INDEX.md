@@ -18,9 +18,9 @@
 | `eto/cli.py` | — | ✅ Step 3 完成 (Reasonix) |
 | `eto/stitches/mcp_dispatch.py` | — | ✅ Step 4 fix 完成 (Reasonix) |
 | `scripts/install-eto-*.sh` | — | ✅ Step 5 完成 (Reasonix) |
-| `eto/extensions/eto.ts` | Reasonix | 🔒 接入竞标逻辑 |
+| `eto/extensions/eto.ts` | — | ✅ Phase A 完成 |
 | `eto/mcp_server.py` | — | ✅ Step 5 完成 |
-| `eto/stitches/bidding/protocol.py` | Reasonix | 🔒 新建：竞标层 |
+| `eto/stitches/bidding/protocol.py` | — | ✅ Phase A 完成 |
 
 ## 协议
 

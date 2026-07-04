@@ -753,13 +753,39 @@ export default function (pi: ExtensionAPI) {
     ];
 
     if (route.route === "plan") {
+      // 1. 先试工作流编排（LangGraph 多 Agent 协作）
+      ctx.ui.notify(`📋 工作流编排中...`, "info");
+      const wfResult = await callStitchAsync("bidding.workflow", "design_workflow",
+        JSON.stringify({ type: route.gewu, title: task, description: task }),
+        JSON.stringify(AGENT_PROFILES.map(p => ({ name: p.name, label: p.label, specialty: p.specialty, description: p.description, weights: p.weights }))));
+      let workflowSteps: any[] | null = null;
+      let wfName = "";
+      if (wfResult && !("_error" in wfResult) && !(wfResult as any).fallback) {
+        workflowSteps = (wfResult as any).steps as any[];
+        wfName = (wfResult as any).workflow || "auto";
+        ctx.ui.notify(`🔄 工作流: ${wfName} (${workflowSteps.length} 步)`, "info");
+      }
+
+      if (workflowSteps && workflowSteps.length > 1) {
+        // 多步 workflow 执行
+        const execResult = await callStitchAsync("bidding.workflow", "execute_workflow", JSON.stringify(wfResult), task);
+        const exec = execResult as any;
+        const stepLines = (exec?.step_results || []).map((r: any, i: number) => `  >> Step ${i+1} (${r.agent}): ${r.status}`).join("\n");
+        ctx.ui.notify(`✅ 工作流完成`, "info");
+        routeLines.push(`## ETO 工作流: ${wfName}`);
+        routeLines.push(stepLines);
+        widgetLines.push(`🔄 ${wfName} (${exec?.total_steps || 0} 步)`);
+        ctx.ui.setWidget("eto-route", widgetLines);
+        return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
+      }
+
+      // 2. 降级：竞标或关键词
       ctx.ui.notify(`📝 竞标中...`, "info");
       const bidResult = await tryBidding(task, route.gewu);
       const agents = bidResult ? [bidResult.winner] : matchAgentsForRoute(route.gewu);
       const agentNames = agents.map(a => a.name).join(", ");
       ctx.ui.notify(`👥 Agent: ${agentNames}${bidResult ? ` (竞标 ${(bidResult.confidence * 100).toFixed(0)}%)` : " (关键词降级)"}`, "info");
 
-      // Skill Memory: 匹配经验技能
       const matchedSkills = matchSkillsForRoute(route.gewu);
       for (const sk of matchedSkills) {
         ctx.ui.notify(`📚 经验: ${sk.skill_name} (${(sk.reward * 100).toFixed(0)}%)`, "info");
