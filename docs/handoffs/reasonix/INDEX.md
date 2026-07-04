@@ -13,12 +13,12 @@
 
 | 路径 | 持有者 | 操作 |
 |:-----|:-------|:-----|
-| `docs/handoffs/reasonix/plan-eto-mcp.md` | Claude Code | 📝 计划就绪 |
-| `eto/mcp_server.py` | — | ⏳ Step 1: FastMCP Server |
-| `eto/mcp_client.py` | — | ⏳ Step 2: MCP 客户端 |
-| `eto/stitches/consensus/vote.py` | — | ⏳ Step 3: 加 mcp provider |
-| `.mcp.json` | — | ⏳ Step 4: 注册 ETO MCP Server |
-| `eto/bootstrap/config_template.py` | — | ⏳ Step 4: 配置示例 |
+| `docs/handoffs/reasonix/plan-eto-shared-memory.md` | Claude Code | 📝 计划就绪 |
+| `eto/stitches/memory/teal_context.py` | — | ⏳ Step 1: 读写 + context_block |
+| `eto/stitches/consensus/vote.py` | — | ⏳ Step 2: 评分/共识后写 context |
+| `eto/stitches/comms/a2a.py` | — | ⏳ Step 3: 执行后写 context |
+| `eto/extensions/eto.ts` | — | ⏳ Step 4: 注入 context 到 prompt |
+| `eto/stitches/test.py` | — | ⏳ Step 5: context 测试 |
 
 ## 协议
 

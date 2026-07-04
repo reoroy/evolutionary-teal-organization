@@ -44,7 +44,7 @@ irm https://raw.githubusercontent.com/reoroy/evolutionary-teal-organization/main
 
 ```bash
 python eto/stitches/test.py
-# 期望输出: 11 PASS
+# 期望输出: 17 PASS
 ```
 
 ### 卸载
@@ -135,13 +135,23 @@ echo '{"fn":"peer_review","args":["部署到生产环境不备份不测试",["re
 
 ---
 
-## 多 Agent 集成（MCP）
+## 多 Agent 集成（MCP + Shared Memory）
 
-ETO **同时是 MCP Server 和 MCP Client**，双向接入 Agent 生态。
+ETO **同时是 MCP Server 和 MCP Client**，双向接入 Agent 生态，并内置共享记忆系统。
+
+### Agent 共享记忆（TealContext）
+
+ETO 的 agent 之间通过 `~/.eto/shared_memory/` 共享上下文。每次 peer 评分、共识、计划执行后自动写入，下次调用前自动注入。
+
+| 写入方 | 写入内容 | 读取方 |
+|:-------|:---------|:-------|
+| `peer_review` (vote.py) | 各角色评分 + 关切点 | 下次 plan 执行 |
+| `execute_plan` (a2a.py) | 步骤执行状态 | 下次 plan 执行 |
+| `eto_memory_write` (MCP) | 外部 Agent 写入 | ETO 内部 |
 
 ### ETO 作为 MCP Server
 
-其他 Agent（Claude Code、Cursor 等）可直接调 ETO 的共识和路由：
+其他 Agent（Claude Code、Cursor 等）可直接调 ETO 的共识、路由和记忆：
 
 ```json
 // .mcp.json
@@ -157,11 +167,14 @@ ETO **同时是 MCP Server 和 MCP Client**，双向接入 Agent 生态。
 
 **暴露的工具：**
 
-| MCP 工具 | 作用 | 调用参数 |
+| MCP 工具 | 作用 | 调用示例 |
 |:---------|:-----|:---------|
-| `eto_consensus` | 三阶段共识评分 | `plan`, `peers` |
-| `eto_route` | 三镜路由分类 | `task` |
-| `eto_peer_config` | 查看 peer 配置 | — |
+| `eto_consensus` | 三阶段共识评分 | `{"plan":"部署到生产","peers":["researcher","coder","auditor"]}` |
+| `eto_route` | 三镜路由分类 | `{"task":"写个 Python 爬虫"}` |
+| `eto_peer_config` | 查看 peer 配置 | `{}` |
+| `eto_memory_write` | 写共享记忆 | `{"key":"decision:db","value_json":"{\\"action\\":\\"migrate\\"}"}` |
+| `eto_memory_read` | 读共享记忆 | `{"key":"decision:db"}` |
+| `eto_memory_list` | 列出记忆 key | `{"pattern":"decision"}` |
 
 ```bash
 # 验证 MCP Server 启动
@@ -190,6 +203,18 @@ Peer 可以通过 MCP 调另一个 Agent 来评分：
 | `mcp_tool` | 调用的工具名（默认 `"agent_review"`） |
 
 对方 MCP Server 只需暴露一个工具接受 `{system, prompt}` 参数并返回 JSON。
+
+### pi-team-agents（增强协作）
+
+如需完整的 agent 团队协作（信箱通信、任务看板、agent 生命周期管理），安装：
+
+```bash
+pi install git:github.com/Jabbslad/pi-team-agents
+```
+
+装后可用工具：`team_memory_write/read/list`、`send_message`、`task_create/update/list`、`team_spawn/dispatch`。
+
+ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边数据互通。
 
 ---
 
