@@ -446,34 +446,39 @@ export default function (pi: ExtensionAPI) {
       onb.seen_welcome = true;
       saveOnboarding(onb);
       ctx.ui.setWidget("eto-route", [
-        "╭── ETO 功能指引 ───────────────────────╮",
+        "╭────────────────────────────────────────╮",
         "│                                        │",
-        "│  三镜路由: 任务自动分类 → 分配 Agent   │",
-        "│  同侪共识: 三阶段评分 → 审议 → 终审   │",
-        "│  多模型: 各 peer 可配不同 LLM          │",
-        "│  MCP 集成: 调其他 Agent / 被调        │",
+        "│   Evolutionary-Teal-Organization       │",
         "│                                        │",
-        "│  直接描述任务即可开始。                │",
-        "│  输入 /sentinel-reload 重载安检        │",
-        "│  输入 /metrics 查看运行统计            │",
+        "│   /ETO — 现在，我们是同志了            │",
+        "│   /ETO — Now, we are comrades.         │",
+        "│                                        │",
+        "│   架构优于单体                         │",
+        "│   architecture > agent                  │",
+        "│   无序 · 三生 · 有机                   │",
+        "│   Entropy · Trinity · Organic          │",
         "│                                        │",
         "╰────────────────────────────────────────╯"
       ]);
       return;
     }
-    ctx.ui.setWidget("eto-route", ["📋 ETO 等待中...", "输入任务开始"]);
+    ctx.ui.setWidget("eto-route", ["🦋 ETO 就绪", "描述任务开始"]);
   });
 
   pi.registerCommand("eto", {
     description: "显示 ETO 品牌信息 / 青色编排状态",
     handler: async (_args, ctx) => {
-      ctx.ui.notify("╭── /ETO ─────────────────╮", "info");
-      ctx.ui.notify("│ 架构优于单体             │", "info");
-      ctx.ui.notify("│ architecture > agent      │", "info");
-      ctx.ui.notify("│ 无序 · 三生 · 有机        │", "info");
-      ctx.ui.notify("│ Entropy · Trinity · Organic│", "info");
-      ctx.ui.notify("╰──────────────────────────╯", "info");
-      ctx.ui.notify("三镜路由: LLM 语义 + 关键词 | 智子: ✅ | 共识: VotingAI", "info");
+      ctx.ui.notify("╭─ /ETO ────────────────────────────╮", "info");
+      ctx.ui.notify("│  Evolutionary-Teal-Organization  │", "info");
+      ctx.ui.notify("│                                   │", "info");
+      ctx.ui.notify("│  现在，我们是同志了。              │", "info");
+      ctx.ui.notify("│  Now, we are comrades.            │", "info");
+      ctx.ui.notify("│                                   │", "info");
+      ctx.ui.notify("│  架构优于单体                     │", "info");
+      ctx.ui.notify("│  architecture > agent              │", "info");
+      ctx.ui.notify("│  无序 · 三生 · 有机               │", "info");
+      ctx.ui.notify("│  Entropy · Trinity · Organic      │", "info");
+      ctx.ui.notify("╰───────────────────────────────────╯", "info");
     },
   });
 
