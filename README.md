@@ -40,6 +40,10 @@ irm https://raw.githubusercontent.com/reoroy/evolutionary-teal-organization/main
 
 安装脚本自动完成：clone → pip install → pi register extension → bootstrap 初始化。
 
+Bootstrap 写入 Agent Profile、种子经验、**使用指南（`~/.eto/memory/guide.json`）**、路由配置。
+
+完整使用参考见 [`docs/usage.md`](docs/usage.md)。
+
 ### 验证
 
 ```bash
@@ -326,15 +330,27 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
 | 一次性查询 | `pi -p "你的问题"` |
 | 指定 provider | `pi --provider deepseek` |
 | 走 Claude 代理 | `./run-eto.cmd` |
-| 智子重载 | 对话中输入 `/sentinel-reload` |
-| 运行统计 | 对话中输入 `/metrics` |
+| 智子重载 | `/sentinel-reload`（对话中） |
+| 运行统计 | `/metrics`（对话中） |
+| ETO 品牌信息 | `/eto`（对话中） |
 
 ### 开发（修改 ETO 自身）
 
 | 操作 | 命令 |
 |:-----|:------|
 | 测试 | `python eto/stitches/test.py` |
+| 使用指南（仓库版） | `docs/usage.md` |
 | 发布 | `make release V=v0.x.0` |
+
+### 开发 slash 命令（Claude Code）
+
+| 命令 | 阶段 | 产出 |
+|:-----|:------|:------|
+| `/plan-eto` | 写 Reasonix plan | `docs/handoffs/reasonix/plan-*.md` |
+| `/code-eto` | 触发 Reasonix 实现 | Reasonix 完成回执 |
+| `/test-eto` | 跑 pytest + type-check | 测试报告 |
+| `/review-eto` | 审计 completion 与 plan 对比 | 审计报告 |
+| `/release-eto` | 版本 bump + changelog + tag + push | 发布版本 |
 
 ---
 
@@ -354,7 +370,7 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
 
 | 组件 | 位置 | 做的事 |
 |:-----|:------|:-------|
-| 路由 + 安检 + 入口 | `extensions/eto.ts` | Pi Extension，~200 行 |
+| 路由 + 安检 v2 + 入口 | `extensions/eto.ts` | Pi Extension，~740 行 |
 | 共识 | `stitches/consensus/vote.py` | 三阶段评分→审议→终审 |
 | 选举 | `stitches/election/elect.py` | 匹配度×空闲率推举 |
 | 执行 | `stitches/comms/a2a.py` | 多步任务+上下文传递 |
@@ -376,7 +392,7 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
 | `~/.pi/eto-config.json` | 路由 provider + peer→provider 映射 |
 | `~/.pi/eto-sentinel.json` | 智子安检规则 |
 | `~/.pi/etoprofiles/profiles.json` | Agent Profile 数据 |
-| `~/.eto/memory/` | 经验 + 审计日志 |
+| `~/.eto/memory/` | 经验 + 审计日志 + 使用指南 |
 | `.mcp.json` | MCP Server 注册 |
 
 ---
