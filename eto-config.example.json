@@ -1,0 +1,31 @@
+{
+  "router": {
+    "provider": "ollama",
+    "models": {
+      "deepseek": {
+        "url": "https://api.deepseek.com/v1/chat/completions",
+        "model": "deepseek-chat"
+      },
+      "ollama": {
+        "url": "http://localhost:11434/api/chat",
+        "model": "qwen2.5-coder:7b"
+      }
+    },
+    "fallback": "keyword"
+  },
+  "peers": {
+    "researcher": {
+      "provider": "ollama",
+      "model": "qwen2.5-coder:7b"
+    },
+    "coder": {
+      "provider": "mcp",
+      "mcp_server": ["python", "-m", "my_coder_agent_mcp"],
+      "mcp_tool": "agent_execute"
+    },
+    "auditor": {
+      "provider": "claude",
+      "model": "claude-sonnet-4-6"
+    }
+  }
+}
