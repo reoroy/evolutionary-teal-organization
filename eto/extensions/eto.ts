@@ -95,11 +95,22 @@ function writeMetric(route: string, agent: string, success: boolean, steps = 0, 
   } catch {}
 }
 
+const FABLE_STYLE = [
+  `沟通风格：`,
+  `- 结论先行，证据紧跟。先说结果再展开。`,
+  `- 无废话：不要恭维、致歉、套话。`,
+  `- 工作中简练，边界处完整。`,
+  `- 承诺的事同一轮完成，否则不承诺。`,
+  `- 格式：文件名:行号 开头，表格呈现数据，项目符号列要点。`,
+];
+
 function decomposePrompt(agents: AgentProfile[]): string {
   const lines = agents.map(a => `- ${a.name} (${a.label}): ${a.description}`);
   return [
     `可用 Agent：`,
     ...lines,
+    ``,
+    ...FABLE_STYLE,
     ``,
     `执行要求：`,
     `1. 将任务拆解成不超过 ${agents.length} 个子任务`,

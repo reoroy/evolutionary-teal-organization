@@ -5,10 +5,20 @@ sys.stdout.reconfigure(encoding="utf-8")
 OLLAMA_URL = "http://localhost:11434"
 MODEL = "qwen2.5-coder:7b"
 
+FABLE_STYLE = (
+    "Communication style:\n"
+    "- Lead with the verdict, then the evidence.\n"
+    "- No filler: no celebration, no apologies, no 'notably' or 'importantly'.\n"
+    "- Clipped while working, complete at boundaries.\n"
+    "- Put conclusions first, supporting data next.\n"
+    "- If you promise something, do it in the same turn or don't promise it."
+)
+
 def _call_llm(prompt: str, timeout: int = 60) -> str:
     """调 Ollama 生成回复"""
+    full = f"{FABLE_STYLE}\n\n{prompt}"
     data = json.dumps({
-        "model": MODEL, "prompt": prompt, "stream": False,
+        "model": MODEL, "prompt": full, "stream": False,
         "options": {"temperature": 0.3, "num_predict": 1024},
     }).encode("utf-8")
     req = urllib.request.Request(
