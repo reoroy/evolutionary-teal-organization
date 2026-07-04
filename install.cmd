@@ -26,8 +26,8 @@ if exist "%ETO_DIR%\.git" (
 echo [3/3] Installing ETO...
 cd /d "%ETO_DIR%"
 
-REM Remove old extension first (avoids tool conflict)
-pi remove eto/extensions/eto.ts >nul 2>&1
+REM Remove old extension file (avoids "Tool conflicts" error)
+if exist "%USERPROFILE%\.pi\agent\extensions\eto.ts" del "%USERPROFILE%\.pi\agent\extensions\eto.ts"
 
 REM Install Python package (needed for bootstrap + MCP server)
 pip install -e eto/ >nul 2>&1

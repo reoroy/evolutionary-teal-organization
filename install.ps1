@@ -25,8 +25,9 @@ if (Test-Path "$target\.git") {
 Write-Host "[3/3] Installing ETO..." -ForegroundColor Cyan
 Push-Location $target
 
-# Remove old extension if exists (avoids tool conflict)
-pi remove "eto/extensions/eto.ts" 2>$null
+# Remove old extension file (avoids "Tool conflicts" error)
+$oldExt = Join-Path $env:USERPROFILE ".pi\agent\extensions\eto.ts"
+if (Test-Path $oldExt) { Remove-Item $oldExt -Force }
 
 # Install Python package
 pip install -e eto/ 2>piped-to-null
