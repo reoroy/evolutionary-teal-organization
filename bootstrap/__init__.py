@@ -35,7 +35,12 @@ def run(force: bool = False) -> dict:
     r = _seed_skills(force=force)
     steps.append(r)
 
-    # 3. generate eto-config.json if missing or forced
+    # 3. seed feature guide into Pi memory
+    from .seed_guide import init as _seed_guide
+    r = _seed_guide(force=force)
+    steps.append(r)
+
+    # 4. generate eto-config.json if missing or forced
     if force or not ETO_CONFIG_PATH.exists():
         from .config_template import make_config
         provider = "deepseek" if os.environ.get("DEEPSEEK_API_KEY") else "ollama"
