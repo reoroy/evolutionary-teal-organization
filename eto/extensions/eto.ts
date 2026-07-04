@@ -741,7 +741,8 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(`🔍 三镜路由: ${route.gewu} → ${route.route}  [${route.layer} ${confidence}%]`, "info");
     ctx.ui.notify(`👤 协调员: ${route.coordinator}`, "info");
 
-    const now = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
+    const tz = process.env.ETO_TIMEZONE || "Asia/Shanghai";
+    const now = new Date().toLocaleString("zh-CN", { timeZone: tz });
     const widgetLines = [
       `📋 ETO | ${route.gewu} → ${route.route} | ${route.coordinator} | ${route.layer} ${confidence}%`,
     ];
