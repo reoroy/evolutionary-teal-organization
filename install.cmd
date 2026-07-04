@@ -26,6 +26,9 @@ if exist "%ETO_DIR%\.git" (
 echo [3/3] Installing ETO...
 cd /d "%ETO_DIR%"
 
+REM Remove old extension first (avoids tool conflict)
+pi remove eto/extensions/eto.ts >nul 2>&1
+
 REM Install Python package (needed for bootstrap + MCP server)
 pip install -e eto/ >nul 2>&1
 if errorlevel 1 (echo   WARNING: pip install failed, run manually: pip install -e "%ETO_DIR%\eto\")
@@ -39,10 +42,13 @@ python3 -c "import sys; sys.path.insert(0,'.'); from eto.bootstrap import run; r
 echo OK
 
 echo.
-echo ========================================
+echo ==========================================
 echo  ETO 安装完成！
-echo  首次启动 pi 将引导你选择 LLM Provider。
-echo  如需卸载: run uninstall.cmd
-echo ========================================
+echo  启动: pi
+echo  如果提示工具冲突，先执行:
+echo    pi remove eto/extensions/eto.ts
+echo  然后重新运行本脚本。
+echo  卸载: uninstall.cmd
+echo ==========================================
 echo.
 pause

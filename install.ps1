@@ -25,6 +25,9 @@ if (Test-Path "$target\.git") {
 Write-Host "[3/3] Installing ETO..." -ForegroundColor Cyan
 Push-Location $target
 
+# Remove old extension if exists (avoids tool conflict)
+pi remove "eto/extensions/eto.ts" 2>$null
+
 # Install Python package
 pip install -e eto/ 2>piped-to-null
 if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: pip install failed" -ForegroundColor Yellow }
@@ -40,8 +43,11 @@ Pop-Location
 Write-Host "  OK" -ForegroundColor Green
 
 Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host " ETO 安装完成！" -ForegroundColor Green
-Write-Host " 启动 pi 后直接描述任务即可。          " -ForegroundColor Gray
-Write-Host " 如需卸载: ./uninstall.ps1             " -ForegroundColor Gray
-Write-Host "========================================" -ForegroundColor Cyan
+Write-Host " 启动: pi" -ForegroundColor White
+Write-Host " 如果提示工具冲突，先执行:" -ForegroundColor Yellow
+Write-Host "   pi remove eto/extensions/eto.ts" -ForegroundColor Gray
+Write-Host " 然后重新运行本脚本。" -ForegroundColor Gray
+Write-Host " 卸载: ./uninstall.ps1" -ForegroundColor Gray
+Write-Host "==========================================" -ForegroundColor Cyan
