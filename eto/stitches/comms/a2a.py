@@ -30,7 +30,7 @@ AGENT_PROMPT = (
 
 def _call_llm(prompt: str, timeout: int = 60) -> str:
     """调 Ollama 生成回复"""
-    full = f"{FABLE_STYLE}\n\n{prompt}"
+    full = f"{AGENT_PROMPT}\n\n{prompt}"
     data = json.dumps({
         "model": MODEL, "prompt": full, "stream": False,
         "options": {"temperature": 0.3, "num_predict": 1024},
@@ -58,6 +58,10 @@ def execute_plan(task: str, steps: list[str]) -> dict:
             result = f"<步骤执行失败: {e}>"
         outputs.append(result)
         context = result[:500]  # 向下文传递上一步摘要
+        try:
+            from eto.stitches.memory.teal_context import append
+            append({"type": "plan_step", "step": i, "total": total, "status": "ok" if "失败" not in result else "fail"})
+        except: pass
 
     return {"outputs": outputs, "total": total}
 
