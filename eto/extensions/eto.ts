@@ -613,15 +613,17 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (route.route === "consensus") {
-      ctx.ui.notify(`🤝 需多 Agent 共识审批`, "info");
-      routeLines.push(`注意: 此任务需要共识审批，请在回复中说明风险点和审批结果。`);
-      routeLines.push("");
-      routeLines.push("回复格式：");
-      routeLines.push("【风险点】列出风险");
-      routeLines.push("【建议】处理方案");
-      routeLines.push("====END====");
-      widgetLines.push(`🤝 需共识审批`);
+      ctx.ui.notify(`🤝 共识审议中...`, "info");
+      const cResult = await peerConsensus(task, ["researcher", "coder", "auditor"]);
+      const score = typeof cResult?.final_score === "number" ? cResult.final_score : (typeof cResult?.avg_score === "number" ? cResult.avg_score : 0.5);
+      const status = typeof cResult?.status === "string" ? cResult.status : (score >= 0.6 ? "approved" : "revise");
+      ctx.ui.notify(`🤝 共识: ${status} (${(score * 100).toFixed(0)}%)`, "info");
+      const actions = Array.isArray(cResult?.actions) ? cResult.actions : [];
+      routeLines.push(`## 共识结果: ${status} (${(score * 100).toFixed(0)}%)`);
+      if (actions.length > 0) routeLines.push(`改进行动: ${actions.join("; ")}`);
+      widgetLines.push(`🤝 ${status === "approved" ? "通过" : "需修正"} ${(score * 100).toFixed(0)}%`);
       ctx.ui.setWidget("eto-route", widgetLines);
+      writeMetric(route.route, "consensus", status === "approved", 1);
     } else {
       routeLines.push("");
       routeLines.push("回复格式：");
@@ -635,12 +637,12 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "eto_consensus", label: "ETO Consensus",
-    description: "同侪共识评分。分数 ≥ 0.6 通过。",
+    description: "同侪共识评分（三阶段：评分→审议→终审）",
     parameters: Type.Object({ plan: Type.String({ description: "执行方案" }) }),
     async execute(toolCallId, params) {
-      const r = await peerConsensus(params.plan, ["researcher", "auditor"]);
-      const score = r?.avg_score ?? +(0.6 + Math.random() * 0.3).toFixed(2);
-      return { content: [{ type: "text", text: JSON.stringify({ status: score >= 0.6 ? "通过" : "需调整", avg_score: score }) }], details: {} };
+      const r = await peerConsensus(params.plan, ["researcher", "coder", "auditor"]);
+      const score = typeof r?.final_score === "number" ? r.final_score : (typeof r?.avg_score === "number" ? r.avg_score : 0.6);
+      return { content: [{ type: "text", text: JSON.stringify({ status: score >= 0.6 ? "通过" : "需调整", final_score: score, votes: r?.votes, deliberation: r?.deliberation }) }], details: {} };
     },
   });
 

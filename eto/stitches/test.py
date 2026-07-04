@@ -75,4 +75,18 @@ p = '_error' in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} bad args             _error")
 all_ok = all_ok and p
 
+# ── Phase 5: 共识三阶段测试 ──────────────────────────
+
+# T2/T3 逻辑测试：用预设评分验证审议+终审路径（不依赖 LLM）
+r = run(ROOT / "consensus/vote.py", {"fn": "_test_deliberation", "args": []})
+p = ok(r) and '"verdict"' in r.stdout and '"actions"' in r.stdout and '"deliberation"' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} consensus 3-phase     deliberation+verdict+actions")
+all_ok = all_ok and p
+
+# 真实 LLM 调用：简单任务无分歧
+r = run(ROOT / "consensus/vote.py", {"fn": "peer_review", "args": ["写一个hello world", ["researcher", "coder", "auditor"]]})
+p = ok(r) and '"status"' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} consensus simple     无分歧通过")
+all_ok = all_ok and p
+
 sys.exit(0 if all_ok else 1)

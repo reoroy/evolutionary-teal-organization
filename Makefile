@@ -97,22 +97,73 @@ install-py:
 bootstrap:
 	python3 -c "import sys; sys.path.insert(0,'.'); from eto.bootstrap import run; run()"
 
-# ── 发布 ──────────────────────────────────────────────────
-# make release           → 完整发布流程
-.PHONY: release
+# ── 发布流水线 ──────────────────────────────────────────────
+# make release V=v0.4.0    → 完整发布流程（指定版本）
+# make release             → 显示当前版本并提示指定
+.PHONY: release changelog verify-install
 
-release:
-	@echo "==> ETO Release v0.1.0"
+VERSION := $(shell grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+release: check-clean
+ifndef V
+	@echo "==> ETO Release"
+	@echo "  当前版本: $(VERSION)"
+	@echo "  用法: make release V=v0.x.0"
+	@echo "  ──────────────────────────────"
+	@echo "  步骤:"
+	@echo "    1. make changelog    — 查看上次发布至今的改动"
+	@echo "    2. make bump V=...   — 更新版本号 + 打 tag + 推送"
+	@echo "    3. make verify-install — 验证安装"
+	@exit 0
+endif
+	@echo "==> ETO Release $(V)"
+	$(MAKE) changelog
+	$(MAKE) bump
+	$(MAKE) verify-install
+	@echo "✅ 发布完成: $(V)"
+
+# 提取上次 tag 至今的 git log
+.PHONY: changelog
+changelog:
 	@echo ""
-	@echo "  1. git tag v0.1.0"
-	@echo "  2. git push origin v0.1.0"
-	@echo "  3. pip install -e eto/"
-	@echo "  4. pi install eto/extensions/eto.ts"
-	@echo "  5. pi-bootstrap.cmd"
+	@echo "── Changelog ──"
+	LAST_TAG=$$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD); \
+	echo "从 $$LAST_TAG 到 HEAD:"; \
+	git log --oneline $$LAST_TAG..HEAD 2>/dev/null || git log --oneline
+	@echo "───────────────"
+
+# 版本号更新 + tag + push（需手动确认）
+.PHONY: bump
+bump: check-clean
+	@echo "更新版本号..."
+	@echo "  当前: $(VERSION)"
+	@echo "  目标: $(V)"
+	@echo "  按回车继续，Ctrl+C 取消..."; read _
+	# 更新 pyproject.toml
+	sed -i 's/^version = ".*"/version = "$(subst v,,$(V))"/' pyproject.toml
+	# 更新 package.json
+	node -e "const p=require('./package.json'); p.version='$(subst v,,$(V))'; require('fs').writeFileSync('package.json', JSON.stringify(p, null, 2)+'\n')" 2>/dev/null || true
+	git add pyproject.toml package.json
+	git commit -m "chore: bump version to $(subst v,,$(V))"
+	git tag $(V)
+	git push origin main --tags
+	@echo "✅ 版本 $(V) 已推送"
+
+# 验证安装
+.PHONY: verify-install
+verify-install:
 	@echo ""
-	@echo "  发布包含:"
-	@echo "    - eto/extensions/eto.ts   (Pi 扩展)"
-	@echo "    - eto/bootstrap/          (初始化工具)"
-	@echo "    - eto/stitches/           (胶水代码)"
-	@echo "    - run-eto.cmd / .ps1      (启动入口)"
-	@echo ""
+	@echo "── 验证安装 ──"
+	pip install -e eto/ 2>/dev/null && echo "✅ pip install OK" || echo "⚠ pip install 失败"
+	# 检查关键文件存在
+	test -f eto/extensions/eto.ts && echo "✅ eto.ts OK" || echo "⚠ eto.ts 缺失"
+	test -f eto/bootstrap/__init__.py && echo "✅ bootstrap OK" || echo "⚠ bootstrap 缺失"
+	test -d eto/stitches && echo "✅ stitches OK" || echo "⚠ stitches 缺失"
+	@echo "──────────────"
+
+.PHONY: check-clean
+check-clean:
+	@if git status --porcelain 2>/dev/null | grep -q .; then \
+		echo "⚠ 工作区有未提交改动，先 git commit 再执行"; \
+		exit 1; \
+	fi
