@@ -1,6 +1,6 @@
 # ETO — Evolutionary Teal Organization
 
-> Pi 是 Agent 引擎。ETO 不是另一个引擎——ETO 是让多个引擎协作的制度。v0.7.0 新增 LangGraph 多 Agent 工作流 + Agent 竞标投票 + agentmemory 上下文互通。
+> Pi 是 Agent 引擎。ETO 不是另一个引擎——ETO 是让多个引擎协作的制度。v0.1.7 新增 LangGraph 多 Agent 工作流 + Agent 竞标投票 + agentmemory 上下文互通。
 
 ETO 是跑在 [Pi CLI](https://github.com/earendil-works/pi-coding-agent) 上的编排层：三镜路由自动分类任务、同侪共识三阶段评审、智子安检拦截危险操作。
 
