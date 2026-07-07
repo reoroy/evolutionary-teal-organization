@@ -365,12 +365,24 @@ Agent 不再被硬分配，而是收到任务后自评竞标：
 
 依赖：`langgraph>=0.2.0`
 
-### 时间注入
+### Fable 模式 — 复杂任务工程方法论
 
-ETO 在每次路由时注入当前时间（北京时间 Asia/Shanghai），让 Agent 感知时间上下文：
+编码任务（含重构/架构/迁移/优化/安全等关键词）自动从 [`docs/fable-mode.md`](docs/fable-mode.md) 加载 Fable 工程方法论注入到 Agent 提示词中：
 
 ```
-当前时间: 2026/7/4 15:30:00
+[Mode: Fable]
+原则：简单优先、读通再改、测试定锚
+步骤：1.理解需求 2.设计测试 3.实现 4.验证 5.重构
+```
+
+来源：[PH5h5W6d2L/fable-mode](https://github.com/PH5h5W6d2L/fable-mode)，项目自带 `docs/fable-mode.md`，全局 `~/.claude/commands/fable-mode.md` 覆盖。
+
+### 时间注入
+
+ETO 在每次路由时从系统时钟读取北京时间并注入 prompt，让 Agent 感知真实时间：
+
+```
+当前时间: 2026/7/4 23:19:42
 ```
 
 路由输出中自动包含时间戳，适用于需要时间感知的任务（日志审计、定时操作、排期计划等）。
@@ -568,6 +580,7 @@ ETO 使用了以下开源项目：
 | 项目 | 用途 | 协议 |
 |:-----|:------|:------|
 | [LangGraph](https://github.com/langchain-ai/langgraph) | 多 Agent 工作流图编排 | MIT |
+| [Fable Mode](https://github.com/PH5h5W6d2L/fable-mode) | 复杂任务工程方法论注入 | MIT |
 | [Pi CLI](https://github.com/earendil-works/pi-coding-agent) | Agent 运行时引擎 | MIT |
 | [Rich](https://github.com/Textualize/rich) | 终端表格渲染（eto-mesh status） | MIT |
 | [ProtoLink](https://github.com/jtemporal/protollm) | Agent 间通信 | Apache 2.0 |

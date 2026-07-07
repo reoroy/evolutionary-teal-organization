@@ -121,6 +121,33 @@ const AGENT_PROMPT = [
   `- 'Done' is hypothetical until verified.`,
 ];
 
+// ── Fable Mode — 复杂任务注入工程方法论 ──
+
+function loadFablePrompt(): string {
+  // 1. 项目本地（git 仓库自带）
+  try {
+    const local = join(__dirname, "..", "..", "docs", "fable-mode.md");
+    if (existsSync(local)) return readFileSync(local, "utf-8");
+  } catch { /* fallback */ }
+  // 2. 全局 Claude 配置
+  try {
+    const global = join(require("os").homedir(), ".claude", "commands", "fable-mode.md");
+    if (existsSync(global)) return readFileSync(global, "utf-8");
+  } catch { /* fallback */ }
+  return `你运行在 Fable 模式下。
+原则：
+- 简单优先、读通再改、测试定锚、平铺好过嵌套
+- 先结论再证据，无填充语
+步骤：
+1. 理解需求 2. 设计测试 3. 实现 4. 验证 5. 重构`;
+}
+
+function isComplexTask(task: string): boolean {
+  const signals = ["重构", "架构", "迁移", "优化", "安全", "并发", "分布式", "refactor", "migrate", "optimize", "security", "concurrent", "distributed"];
+  const t = task.toLowerCase();
+  return signals.some(s => t.includes(s.toLowerCase()));
+}
+
 function decomposePrompt(agents: AgentProfile[]): string {
   const lines = agents.map(a => `- ${a.name} (${a.label}): ${a.description}`);
   return [
@@ -802,6 +829,10 @@ export default function (pi: ExtensionAPI) {
       routeLines.push("");
       routeLines.push(synthesizeSummary(task, route, agents));
       routeLines.push("");
+      if (route.gewu === "code" && isComplexTask(task)) {
+        routeLines.push(`[Mode: Fable]\n${loadFablePrompt()}`);
+        routeLines.push("");
+      }
       routeLines.push(decomposePrompt(agents));
 
       // 注入匹配的 skill 经验
