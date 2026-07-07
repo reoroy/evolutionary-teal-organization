@@ -143,7 +143,7 @@ function loadFablePrompt(): string {
 }
 
 function isComplexTask(task: string): boolean {
-  const signals = ["重构", "架构", "迁移", "优化", "安全", "并发", "分布式", "refactor", "migrate", "optimize", "security", "concurrent", "distributed"];
+  const signals = ["重构", "架构", "迁移", "优化", "安全", "并发", "分布式", "调试", "性能", "兼容", "降级", "回滚", "容错", "熔断", "refactor", "migrate", "optimize", "security", "concurrent", "distributed", "debug", "performance", "compat", "rollback", "fault", "circuit"];
   const t = task.toLowerCase();
   return signals.some(s => t.includes(s.toLowerCase()));
 }
@@ -781,33 +781,39 @@ export default function (pi: ExtensionAPI) {
     ];
 
     if (route.route === "plan") {
-      // 1. 先试工作流编排（LangGraph 多 Agent 协作）
-      ctx.ui.notify(`📋 工作流编排中...`, "info");
-      const wfResult = await callStitchAsync("bidding.workflow", "design_workflow",
-        JSON.stringify({ type: route.gewu, title: task, description: task }),
+      // 1. 先选协调员（Raft）
+      ctx.ui.notify(`🗳️ 选举协调员...`, "info");
+      const candidates_: [string, number][] = [
+        ["researcher", route.gewu === "research" ? 0.9 : 0.5],
+        ["coder", route.gewu === "code" ? 0.9 : 0.5],
+        ["auditor", route.gewu === "solution" ? 0.9 : 0.5],
+      ];
+      const coordinator = await electCoordinator(candidates_);
+      ctx.ui.notify(`👤 协调员: ${coordinator}`, "info");
+
+      // 2. 协调员设计工作流
+      ctx.ui.notify(`📋 协调员编排中...`, "info");
+      const wfResult = await callStitchAsync("bidding.workflow", "coordinator_design",
+        JSON.stringify({ type: route.gewu, title: task, description: task, coordinator }),
         JSON.stringify(AGENT_PROFILES.map(p => ({ name: p.name, label: p.label, specialty: p.specialty, description: p.description, weights: p.weights }))));
       let workflowSteps: any[] | null = null;
-      let wfName = "";
       if (wfResult && !("_error" in wfResult) && !(wfResult as any).fallback) {
         workflowSteps = (wfResult as any).steps as any[];
-        wfName = (wfResult as any).workflow || "auto";
-        ctx.ui.notify(`🔄 工作流: ${wfName} (${workflowSteps.length} 步)`, "info");
       }
 
       if (workflowSteps && workflowSteps.length > 1) {
-        // 多步 workflow 执行
         const execResult = await callStitchAsync("bidding.workflow", "execute_workflow", JSON.stringify(wfResult), task);
         const exec = execResult as any;
         const stepLines = (exec?.step_results || []).map((r: any, i: number) => `  >> Step ${i+1} (${r.agent}): ${r.status}`).join("\n");
         ctx.ui.notify(`✅ 工作流完成`, "info");
-        routeLines.push(`## ETO 工作流: ${wfName}`);
+        routeLines.push(`## ETO 工作流 | 协调员: ${coordinator}`);
         routeLines.push(stepLines);
-        widgetLines.push(`🔄 ${wfName} (${exec?.total_steps || 0} 步)`);
+        widgetLines.push(`🔄 ${(wfResult as any).workflow || "workflow"} (${exec?.total_steps || 0} 步)`);
         ctx.ui.setWidget("eto-route", widgetLines);
         return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
       }
 
-      // 2. 降级：竞标或关键词
+      // 3. 降级：竞标或关键词
       ctx.ui.notify(`📝 竞标中...`, "info");
       const bidResult = await tryBidding(task, route.gewu);
       const agents = bidResult ? [bidResult.winner] : matchAgentsForRoute(route.gewu);
@@ -829,7 +835,7 @@ export default function (pi: ExtensionAPI) {
       routeLines.push("");
       routeLines.push(synthesizeSummary(task, route, agents));
       routeLines.push("");
-      if (route.gewu === "code" && isComplexTask(task)) {
+      if (isComplexTask(task)) {
         routeLines.push(`[Mode: Fable]\n${loadFablePrompt()}`);
         routeLines.push("");
       }

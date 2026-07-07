@@ -138,6 +138,29 @@ def design_workflow(task_spec_json: str, profiles_json: str) -> str:
 
     return json.dumps({"proposals": proposals["proposals"], "votes": raw_votes, "winner": winner_idx, "steps": enriched_steps, "fallback": len(enriched_steps) == 0}, ensure_ascii=False)
 
+
+def coordinator_design(task_spec_json: str, profiles_json: str) -> str:
+    """协调员设计工作流（不经过多 Agent 投票，协调员以指挥官身份出计划）"""
+    spec = json.loads(task_spec_json)
+    profiles = json.loads(profiles_json)
+    coordinator = spec.get("coordinator", "coder")
+    agent_pool = "\n".join(f"- {p['name']} ({p['label']}): 擅长{p.get('specialty','')}" for p in profiles)
+    system = f"你是指挥官({coordinator})。根据任务和可用Agent，制定最优协作计划。输出JSON。"
+    prompt = f"""任务: {spec.get('title','')}
+描述: {spec.get('description','')}
+类型: {spec.get('type','code')}
+可用 Agent:
+{agent_pool}
+输出 JSON:
+{{"workflow":"名称","steps":[{{"step":1,"agent":"agent名","description":"做什么","system_prompt":"提示词","skills":[],"mcp_tools":[]}}]}}
+简单任务只输出 1 步。"""
+    raw = _call_llm(system, prompt)
+    parsed = _extract_json(raw) if raw else None
+    if parsed and "steps" in parsed and len(parsed["steps"]) > 0:
+        return json.dumps({"workflow": parsed.get("workflow", "auto"), "steps": parsed["steps"], "coordinator": coordinator, "fallback": False}, ensure_ascii=False)
+    return json.dumps({"workflow": "direct", "steps": [], "coordinator": coordinator, "fallback": True}, ensure_ascii=False)
+
+
 # ── Phase 2 & 3: LangGraph 构建 + 执行 ──────────
 
 class StepResult(TypedDict):
@@ -155,6 +178,27 @@ class WorkflowState(TypedDict):
     overall_status: str
     error: str
 
+def _is_complex_task(task: str) -> bool:
+    """与 eto.ts isComplexTask() 保持一致的复杂度检测"""
+    signals = ["重构", "架构", "迁移", "优化", "安全", "并发", "分布式", "调试", "性能", "兼容",
+               "降级", "回滚", "容错", "熔断",
+               "refactor", "migrate", "optimize", "security", "concurrent", "distributed",
+               "debug", "performance", "compat", "rollback", "fault", "circuit"]
+    t = task.lower()
+    return any(s.lower() in t for s in signals)
+
+def _load_fable_prompt() -> str:
+    """与 eto.ts loadFablePrompt() 一致的加载策略"""
+    import os as _os
+    candidates = [
+        Path(__file__).resolve().parent.parent.parent.parent / "docs" / "fable-mode.md",
+        Path(_os.path.expanduser("~/.claude/commands/fable-mode.md")),
+    ]
+    for p in candidates:
+        if p.exists():
+            return p.read_text("utf-8")
+    return "你运行在 Fable 模式下。\n原则：\n- 简单优先、读通再改、测试定锚、平铺好过嵌套\n- 先结论再证据，无填充语\n步骤：\n1. 理解需求 2. 设计测试 3. 实现 4. 验证 5. 重构"
+
 def _make_node_fn(step: dict):
     def node_fn(state: WorkflowState) -> WorkflowState:
         sp = step.get("system_prompt", "")
@@ -162,6 +206,10 @@ def _make_node_fn(step: dict):
         import os, zoneinfo
         _tz = zoneinfo.ZoneInfo(os.environ.get("ETO_TIMEZONE", "Asia/Shanghai"))
         sp = f"当前时间: {datetime.now(_tz).strftime('%Y/%m/%d %H:%M:%S')}\n\n{sp}"
+
+        # 复杂任务注入 Fable 模式
+        if _is_complex_task(state.get("task", "")):
+            sp = f"[Mode: Fable]\n{_load_fable_prompt()}\n\n{sp}"
         skills = step.get("skills", [])
         tools = step.get("mcp_tools", [])
 

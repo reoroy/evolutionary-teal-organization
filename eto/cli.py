@@ -3,6 +3,8 @@ import json, os, platform, shutil, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+_USE_EN = not (sys.stdout.encoding and "utf" in sys.stdout.encoding.lower())
+
 from rich.console import Console
 from rich.table import Table
 
@@ -60,7 +62,7 @@ def cmd_join():
         "last_seen": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     save_registry(reg)
-    print(f"OK 已注册: {agent_id}")
+    print(f"{'OK registered' if _USE_EN else 'OK 已注册'}: {agent_id}")
 
 
 def cmd_status():
@@ -68,7 +70,7 @@ def cmd_status():
     agents = reg.get("agents", {})
     console = Console()
     if not agents:
-        print("Mesh 中尚无 Agent")
+        print("No agents registered" if _USE_EN else "Mesh 中尚无 Agent")
         return
     table = Table(title="Agent Registry")
     table.add_column("ID", style="cyan")
@@ -81,7 +83,7 @@ def cmd_status():
         try:
             last_seen = datetime.fromisoformat(last_seen_str.replace("Z", "+00:00"))
             diff = (now - last_seen).total_seconds()
-            status = "在线" if diff < 120 else "离线"
+            status = "online" if _USE_EN else ("在线" if diff < 120 else "离线")
         except (ValueError, TypeError):
             status = "未知"
         table.add_row(

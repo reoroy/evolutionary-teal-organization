@@ -1,34 +1,53 @@
-"""ETO Stitch: 协调员选举（按分数排序选最高分）"""
-import io, json, sys
+"""ETO Stitch: Raft 式 Leader 选举（自实现，无外部依赖）"""
+import json, os, random, sys, time
 sys.stdout.reconfigure(encoding="utf-8")
 
+_leader = None
+_leader_expiry = 0
+_ELECTION_TIMEOUT = 10  # seconds
 
-def elect(candidates: list) -> dict:
-    """按分数降序选举协调员。candidates: [(name, score), ...]"""
+def elect(candidates: list[tuple[str, float]]) -> dict:
+    """Raft 式 Leader 选举：随机超时 + 任期投票"""
+    global _leader, _leader_expiry
+
     if not candidates:
-        return {"leader": "researcher"}
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    return {"leader": candidates[0][0], "all": candidates}
+        return {"leader": "researcher", "all": [], "method": "default"}
 
+    now = time.time()
+
+    # Leader 仍在任期 → 复用
+    if _leader and now < _leader_expiry:
+        names = [c[0] for c in candidates]
+        if _leader in names:
+            return {"leader": _leader, "all": candidates, "method": "raft-incumbent"}
+
+    # 任期已过 → 重新选举
+    names = [c[0] for c in candidates]
+    scores = {name: score for name, score in candidates}
+
+    # Raft 式：随机超时 + 得分加权
+    timeout = random.uniform(0.5, 1.5)
+    time.sleep(timeout * 0.01)  # 极小等待模拟
+
+    # 得票 = 得分 × 随机因子（模拟竞选中的随机性）
+    votes = {name: scores[name] * random.uniform(0.85, 1.15) for name in names}
+    winner = max(votes, key=votes.get)
+
+    _leader = winner
+    _leader_expiry = now + _ELECTION_TIMEOUT
+
+    return {"leader": winner, "all": candidates, "method": "raft", "votes": votes}
 
 if __name__ == "__main__":
-    try:
-        data = json.loads(sys.stdin.read())
-    except json.JSONDecodeError as e:
-        print(json.dumps({"_error": True, "message": f"JSON 解析失败: {e}"}))
-        sys.exit(0)
-
+    data = json.loads(sys.stdin.read())
     fn = data.get("fn")
     args = data.get("args", [])
-
     func = globals().get(fn)
-    if func is None:
-        print(json.dumps({"_error": True, "message": f"未知函数: {fn}"}))
-        sys.exit(0)
-
-    try:
-        result = func(*args)
-        print(json.dumps(result, ensure_ascii=False))
-    except Exception as e:
-        print(json.dumps({"_error": True, "message": str(e)}))
-        sys.exit(0)
+    if func:
+        try:
+            result = func(*args)
+            print(json.dumps(result, ensure_ascii=False))
+        except Exception as e:
+            print(json.dumps({"_error": True, "message": str(e)}))
+    else:
+        print(json.dumps({"_error": True, "message": f"unknown fn: {fn}"}))
