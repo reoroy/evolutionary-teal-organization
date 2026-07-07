@@ -159,14 +159,31 @@ def _score_single(peer: str, plan: str) -> dict:
     except: pass
     return result
 
+# ── 多策略投票 ──────────────────────────
+
+def _multi_strategy_tally(scores: list[float]) -> dict:
+    """多策略投票：approval + borda + irv，防单策略偏误"""
+    if not scores:
+        return {"final": 0.6, "strategies": {}}
+    n = len(scores)
+    sorted_s = sorted(scores, reverse=True)
+
+    approval = sum(1 for s in scores if s >= 0.6) / n
+    borda = sum((n - i - 1) / (n - 1) for i in range(n)) / n if n > 1 else 1.0
+    irv = (sum(sorted_s) - min(sorted_s)) / (n - 1) if n > 1 else sorted_s[0]
+    final = (approval + borda + irv) / 3
+
+    return {"final": round(final, 3), "strategies": {"approval": round(approval, 3), "borda": round(borda, 3), "irv": round(irv, 3)}}
+
 def peer_review(plan: str, peers: list[str]) -> dict:
     """三阶段共识：T1评分 → T2审议 → T3终审"""
     # T1: 独立评分
     votes = [_score_single(p, plan) for p in peers]
-    avg = round(sum(v["score"] for v in votes) / len(votes), 3) if votes else 0.6
     scores = [v["score"] for v in votes]
+    tally = _multi_strategy_tally(scores)
+    avg = tally["final"]
     gap = max(scores) - min(scores) if scores else 0
-    result = {"status": "approved" if avg >= 0.6 else "revise", "final_score": avg, "votes": votes, "deliberation": {"rounds": 0}, "actions": []}
+    result = {"status": "approved" if avg >= 0.6 else "revise", "final_score": avg, "votes": votes, "deliberation": {"rounds": 0, "strategies": tally["strategies"]}, "actions": [], "audit_id": f"v{int(__import__('time').time())}"}
 
     # T2: 分歧大则审议
     if gap > 0.2:

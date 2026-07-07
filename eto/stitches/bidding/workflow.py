@@ -158,6 +158,10 @@ class WorkflowState(TypedDict):
 def _make_node_fn(step: dict):
     def node_fn(state: WorkflowState) -> WorkflowState:
         sp = step.get("system_prompt", "")
+        from datetime import datetime
+        import os, zoneinfo
+        _tz = zoneinfo.ZoneInfo(os.environ.get("ETO_TIMEZONE", "Asia/Shanghai"))
+        sp = f"当前时间: {datetime.now(_tz).strftime('%Y/%m/%d %H:%M:%S')}\n\n{sp}"
         skills = step.get("skills", [])
         tools = step.get("mcp_tools", [])
 
