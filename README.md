@@ -51,6 +51,27 @@ python eto/stitches/test.py
 # 期望输出: 17 PASS
 ```
 
+### 一键安装全部依赖
+
+```bash
+# 核心依赖（必装）
+pip install langgraph
+
+# LLM 后端（至少选一个）
+ollama pull qwen2.5-coder:7b    # 本地模型，免费
+# 或配置环境变量: DEEPSEEK_API_KEY / ANTHROPIC_API_KEY
+
+# 跨 Agent 记忆（可选增强）
+npx -y @agentmemory/mcp          # agentmemory 中央记忆库
+```
+
+| 功能 | 一键命令 | 不装会怎样 |
+|:-----|:---------|:-----------|
+| LangGraph 工作流 | `pip install langgraph` | 降级到竞标/关键词 |
+| Ollama 本地投票 | `ollama pull qwen2.5-coder:7b` | 投票返回默认值 |
+| agentmemory | `npx -y @agentmemory/mcp` | 记忆降级到本地文件 |
+| MCP 远程 Agent | 配置 `~/.pi/eto-config.json` | 只用本地 LLM |
+
 ## 跨平台安装
 
 ### 前置条件
