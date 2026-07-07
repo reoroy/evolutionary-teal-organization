@@ -72,30 +72,80 @@ npx -y @agentmemory/mcp          # agentmemory 中央记忆库
 | agentmemory | `npx -y @agentmemory/mcp` | 记忆降级到本地文件 |
 | MCP 远程 Agent | 配置 `~/.pi/eto-config.json` | 只用本地 LLM |
 
-## 跨平台安装
+## 多 Agent 联动
 
-### 前置条件
+每个运行 ETO 的 Agent 通过 Agent Registry 互相发现，通过 MCP dispatch 互相调用。
+
+### 前提：本机注册
+
 ```bash
-pip install -e .          # 安装 eto-mesh CLI
-eto-mesh join             # 注册本机
+pip install git+https://github.com/reoroy/evolutionary-teal-organization.git
+eto-mesh join             # 注册本机到 Mesh
 eto-mesh status           # 确认在线
 ```
 
-### AI 自动安装
+### Claude Code 接入
 
-把以下提示词发给你的 AI 编码助手（Claude Code / Cursor / Windsurf 等），它会自动配置 MCP：
+把以下提示词发给 Claude Code，它会自动配置 MCP：
 
-> 这个项目是 ETO Mesh。添加 ETO MCP Server 到 `.mcp.json`：
-> - 命令: `python -m eto.mcp_server`
-> - 工作目录: 项目根路径
-> - 目的: 提供 eto_consensus / eto_route / eto_memory_write 等工具
->
-> 运行以下命令安装并注册：
-> ```bash
-> pip install git+https://github.com/reoroy/evolutionary-teal-organization.git
-> eto-mesh join
-> eto-mesh status
-> ```
+> 添加 ETO MCP Server。命令: `python -m eto.mcp_server`，提供 eto_consensus / eto_route / eto_memory_write 工具。运行 `eto-mesh join` 注册到集群。
+
+验证：Claude Code 中直接调用 `eto_consensus` / `eto_route` 等工具。
+
+### Reasonix 接入
+
+安装后在对应平台注册：
+
+```bash
+pip install git+https://github.com/reoroy/evolutionary-teal-organization.git
+eto-mesh join              # 注册到同一 Mesh
+eto-mesh status            # 应看到两个 Agent 在线
+```
+
+之后两个 Agent 通过 registry 互相发现。
+
+### 跨 Agent 调度
+
+配置 `~/.pi/eto-config.json` 的 peers 段，指定目标 Agent 的 MCP 入口和调度参数：
+
+```json
+{
+  "peers": {
+    "claude-code": {
+      "provider": "mcp",
+      "mcp_server": ["python", "-m", "eto.mcp_server"],
+      "mcp_tool": "agent_execute",
+      "dispatch_spec": {
+        "system_prompt": "你是一个编码助手",
+        "skills": ["rest-api"],
+        "mcp_tools": ["write", "edit"],
+        "timeout": 30000
+      }
+    }
+  }
+}
+```
+
+路由系统自动匹配：
+
+| 场景 | 行为 |
+|:-----|:------|
+| 简单问答 | direct → 本机回答 |
+| 复杂编码 | plan → 竞标 → Raft 选举协调员 → LangGraph 工作流 |
+| 需要远程 Agent | dispatch_spec → MCP → 目标 Agent |
+| 风险操作 | consensus → 三阶段评分 |
+| 复杂任务触发 | Fable 方法论注入 → Agent 工程化执行 |
+
+### 记忆互通
+
+- **本地 shared_memory**：所有 Agent 各自写本地 KV，快速读写
+- **agentmemory**（可选）：跨 Agent 中央记忆库，语义搜索 + 长期保留
+
+```bash
+# 开启 cross-Agent 记忆
+npx -y @agentmemory/mcp
+context_block() 自动优先拉 agentmemory，降级本地
+```
 
 ### 卸载
 
