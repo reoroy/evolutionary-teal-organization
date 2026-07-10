@@ -781,6 +781,21 @@ export default function (pi: ExtensionAPI) {
     ];
 
     if (route.route === "plan") {
+      // 0. Clarify Gate — 模糊指令拦截
+      const clarifyResult = await callStitchAsync("quality.clarify", "detect_vague", task);
+      if (clarifyResult && !("_error" in clarifyResult) && (clarifyResult as any).vague) {
+        const suggestions = ((clarifyResult as any).suggestions as string[] || []).join(" / ");
+        ctx.ui.notify(`💡 指令较模糊，试试更具体：${suggestions}`, "info");
+        routeLines.push(`## 指令澄清\n检测到模糊词：${((clarifyResult as any).matched as string[] || []).join(", ")}`);
+        routeLines.push(`建议方向：${suggestions}`);
+        routeLines.push(`当前任务: ${task}`);
+        routeLines.push(`请完善描述后再试。`);
+        widgetLines.push(`💡 指令待澄清`);
+        ctx.ui.setWidget("eto-route", widgetLines);
+        writeMetric(route.route, "clarify", false, 0);
+        return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
+      }
+
       // 1. 先选协调员（Raft）
       ctx.ui.notify(`🗳️ 选举协调员...`, "info");
       const candidates_: [string, number][] = [

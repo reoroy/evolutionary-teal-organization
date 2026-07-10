@@ -69,6 +69,26 @@ def eto_memory_list(pattern: str = "") -> str:
     keys = list_keys(pattern)
     return _json.dumps(keys, ensure_ascii=False)
 
+@mcp.tool(description="检测任务指令是否模糊，返回澄清选项。任何 AI Agent 可调。")
+def eto_clarify(task: str) -> str:
+    from eto.stitches.quality.clarify import detect_vague
+    import json as _json
+    result = detect_vague(task)
+    return _json.dumps(result or {"vague": False, "task": task}, ensure_ascii=False)
+
+@mcp.tool(description="审查 sub-agent 返回结果，返回结构化摘要供确认。")
+def eto_review(agent: str, result_json: str) -> str:
+    from eto.stitches.quality.review import summarize_dispatch_result
+    import json as _json
+    result = _json.loads(result_json)
+    return _json.dumps(summarize_dispatch_result(agent, result), ensure_ascii=False)
+
+@mcp.tool(description="保存用户反馈为 routing 约束，下次 dispatch 自动注入。")
+def eto_feedback(agent: str, constraint: str) -> str:
+    from eto.stitches.quality.feedback import save_constraint
+    import json as _json
+    return _json.dumps(save_constraint(agent, constraint), ensure_ascii=False)
+
 def main():
     mcp.run(transport="stdio")
 

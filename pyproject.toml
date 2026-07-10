@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "evolutionary-teal-organization"
-version = "0.1.8"
+version = "0.1.9"
 description = "ETO — 青色组织多 Agent 编排架构 / Multi-agent Teal Organization orchestration"
 readme = "README.md"
 license = { text = "MIT" }

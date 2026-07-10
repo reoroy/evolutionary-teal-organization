@@ -1,6 +1,6 @@
 # ETO — Evolutionary Teal Organization
 
-> Pi 是 Agent 引擎。ETO 不是另一个引擎——ETO 是让多个引擎协作的制度。v0.1.8 新增 Fable 模式 + 时间注入 + 多策略投票 + backlog 修复。
+> Pi 是 Agent 引擎。ETO 不是另一个引擎——ETO 是让多个引擎协作的制度。v0.1.9 新增 HITL 认知质量层（Clarify/Review/Feedback 三 Gate）。
 
 ETO 是跑在 [Pi CLI](https://github.com/earendil-works/pi-coding-agent) 上的编排层：三镜路由自动分类任务、同侪共识三阶段评审、智子安检拦截危险操作。
 
@@ -457,6 +457,28 @@ ETO 在每次路由时从系统时钟读取北京时间并注入 prompt，让 Ag
 ```
 
 路由输出中自动包含时间戳，适用于需要时间感知的任务（日志审计、定时操作、排期计划等）。
+
+### HITL 认知质量层 — 三 Gate 人在回路
+
+纯规则引擎（零 LLM 调用），在关键节点强制人类参与，提升指令和输出质量：
+
+| Gate | 位置 | 作用 |
+|:-----|:------|:------|
+| **Clarify** | 路由后、dispatch 前 | 检测模糊指令（"分析一下"、"优化"），提示用户选方向方可继续 |
+| **Review** | dispatch 后 | 提取结果摘要（bullet/numbered list/前200字），结构化审查 |
+| **Feedback** | 拒绝后 | 将反馈写入 shared_memory，下次 dispatch 自动注入约束到 system_prompt |
+
+```bash
+# Pi 终端中效果
+> 分析一下
+💡 指令较模糊，试试更具体：分析市场/行业 / 分析代码质量 / 分析数据/报表
+
+# MCP 工具（任何 AI Agent 可调）
+eto_clarify("帮我优化一下")
+# → {"vague": true, "suggestions": ["优化性能", "优化代码结构", ...]}
+```
+
+Clarify Gate 已在 Pi 的路由中默认启用。Review / Feedback Gate 通过 MCP 工具 `eto_review` / `eto_feedback` 暴露，Agent 自行决定展示方式。
 
 ### context_block → agentmemory
 
