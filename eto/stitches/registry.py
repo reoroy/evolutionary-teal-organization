@@ -73,6 +73,22 @@ def get_peers() -> list:
             return list(data.get("peers", {}).values())
     except: return []
 
+def get_available_agents() -> list[dict]:
+    """返回所有可用 Agent，按能力分组（默认 3 个内置 + registry peers）"""
+    agents = [
+        {"id": "coder", "label": "编码员", "capabilities": ["code", "implement", "write"], "source": "builtin"},
+        {"id": "researcher", "label": "研究员", "capabilities": ["research", "analysis", "report"], "source": "builtin"},
+        {"id": "auditor", "label": "审计员", "capabilities": ["audit", "review", "security"], "source": "builtin"},
+    ]
+    for peer in get_peers():
+        agents.append({
+            "id": peer.get("name", peer.get("id", "peer")),
+            "label": peer.get("label", peer.get("id", "peer")),
+            "capabilities": peer.get("capabilities", []),
+            "source": "registry",
+        })
+    return agents
+
 if __name__ == "__main__":
     data = json.loads(sys.stdin.read())
     fn = data.get("fn")

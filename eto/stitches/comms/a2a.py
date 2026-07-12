@@ -59,8 +59,10 @@ def execute_plan(task: str, steps: list[str]) -> dict:
         outputs.append(result)
         context = result[:500]  # 向下文传递上一步摘要
         try:
-            from eto.stitches.memory.shared_memory import write
-            write(f"plan_step:{i}", {"type": "plan_step", "step": i, "total": total, "status": "ok" if "失败" not in result else "fail"})
+            from eto.stitches.memory.shared_memory import write as _smw
+            _smw(f"plan_step:{i}", {"type": "plan_step", "step": i, "total": total, "status": "ok" if "失败" not in result else "fail"})
+            status = "ok" if "失败" not in result else "fail"
+            _smw(f"task_outcome:execute_plan", {"type": "task_outcome", "agent": "execute_plan", "task": task[:100], "status": status, "ts": __import__('time').time()}, author="learn")
         except: pass
 
     return {"outputs": outputs, "total": total}

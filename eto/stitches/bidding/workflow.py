@@ -139,6 +139,51 @@ def design_workflow(task_spec_json: str, profiles_json: str) -> str:
     return json.dumps({"proposals": proposals["proposals"], "votes": raw_votes, "winner": winner_idx, "steps": enriched_steps, "fallback": len(enriched_steps) == 0}, ensure_ascii=False)
 
 
+def _match_capability(agent: dict, task: str) -> int:
+    """计算 Agent 与任务的匹配度"""
+    tl = task.lower()
+    return sum(1 for cap in agent.get("capabilities", []) if cap.lower() in tl)
+
+def _success_rate(agent_id: str) -> float:
+    """查询 Agent 历史成功率"""
+    try:
+        from eto.stitches.memory.shared_memory import get_outcomes
+        outcomes = get_outcomes(agent_id)
+        if not outcomes:
+            return 0.5
+        ok = sum(1 for o in outcomes if o.get("status") == "ok")
+        return ok / len(outcomes)
+    except: return 0.5
+
+def select_agent(task: str, available_agents: list[dict]) -> str:
+    """根据任务能力 + 历史成功率选择 Agent"""
+    scored = [(a["id"], _match_capability(a, task) + _success_rate(a["id"]) * 0.2) for a in available_agents]
+    scored.sort(key=lambda x: -x[1])
+    return scored[0][0] if scored else "coder"
+
+def generate_steps(task: str) -> list[dict]:
+    """根据任务复杂度生成步骤"""
+    tl = task.lower()
+    steps = []
+    if any(w in tl for w in ["研究", "调研", "分析", "research", "analyze"]):
+        steps.append({"step": 1, "agent": None, "description": "调研需求", "system_prompt": "调研任务需求和技术方案"})
+    if any(w in tl for w in ["写", "实现", "重构", "write", "code", "implement"]):
+        steps.append({"step": len(steps)+1, "agent": None, "description": "编码实现", "system_prompt": "编写代码实现功能"})
+    if any(w in tl for w in ["审查", "审计", "安全", "review", "audit", "security"]):
+        steps.append({"step": len(steps)+1, "agent": None, "description": "审查质量", "system_prompt": "审查代码质量和安全性"})
+    if not steps:
+        steps.append({"step": 1, "agent": None, "description": "执行", "system_prompt": f"执行以下任务:\n{task}"})
+    return steps
+
+def build_dynamic_graph(task: str) -> str:
+    """动态构建 LangGraph"""
+    from eto.stitches.registry import get_available_agents
+    agents = get_available_agents()
+    steps = generate_steps(task)
+    for step in steps:
+        step["agent"] = select_agent(task, agents) if len(steps) == 1 else select_agent(step["description"], agents)
+    return json.dumps({"workflow": "dynamic", "steps": steps, "agents_available": len(agents), "fallback": False}, ensure_ascii=False)
+
 def coordinator_design(task_spec_json: str, profiles_json: str) -> str:
     """协调员设计工作流（不经过多 Agent 投票，协调员以指挥官身份出计划）"""
     spec = json.loads(task_spec_json)

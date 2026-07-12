@@ -34,6 +34,22 @@ def read(key: str, default: dict | None = None) -> dict | None:
     except:
         return default
 
+def get_outcomes(agent_id: str) -> list[dict]:
+    """读取某 Agent 的所有历史执行结果"""
+    all_entries = []
+    if not MEM_DIR.exists():
+        return []
+    for f in MEM_DIR.iterdir():
+        if f.suffix != ".json":
+            continue
+        try:
+            entry = json.loads(f.read_text("utf-8"))
+            v = entry.get("value", {})
+            if v.get("type") == "task_outcome" and v.get("agent") == agent_id:
+                all_entries.append(v)
+        except: pass
+    return all_entries
+
 def list_keys(pattern: str = "") -> list[str]:
     """列出所有 KV key"""
     if not MEM_DIR.exists():
@@ -55,6 +71,55 @@ def delete(key: str):
     path = MEM_DIR / f"{safe_key}.json"
     if path.exists():
         path.unlink()
+
+# ── 文件级状态协调（多 Agent 协作）───────────────────────
+FILE_STATES_DIR = Path.home() / ".eto" / "file_states"
+
+def file_status(file: str) -> dict | None:
+    """查询文件的最新编辑状态。返回 {editor, hash, ts} 或 None"""
+    safe = file.replace("/", "_").replace("\\", "_")
+    path = FILE_STATES_DIR / f"{safe}.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text("utf-8"))
+    except:
+        return None
+
+def file_update(file: str, editor: str, hash: str = "") -> dict:
+    """发布文件编辑状态。返回 {status: "ok", file, editor, ts}"""
+    FILE_STATES_DIR.mkdir(parents=True, exist_ok=True)
+    safe = file.replace("/", "_").replace("\\", "_")
+    path = FILE_STATES_DIR / f"{safe}.json"
+    entry = {"file": file, "editor": editor, "hash": hash, "ts": time.time()}
+    path.write_text(json.dumps(entry, ensure_ascii=False), "utf-8")
+    return {"status": "ok", "file": file, "editor": editor, "ts": entry["ts"]}
+
+def file_release(file: str) -> bool:
+    """解除文件锁"""
+    safe = file.replace("/", "_").replace("\\", "_")
+    path = FILE_STATES_DIR / f"{safe}.json"
+    if path.exists():
+        path.unlink()
+        return True
+    return False
+
+def file_list() -> list[dict]:
+    """列出所有文件的当前状态"""
+    if not FILE_STATES_DIR.exists():
+        return []
+    result = []
+    for f in sorted(
+        FILE_STATES_DIR.iterdir(),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    ):
+        if f.suffix == ".json":
+            try:
+                result.append(json.loads(f.read_text("utf-8")))
+            except:
+                pass
+    return result
 
 _AGENTMEMORY_CMD = os.environ.get("ETO_AGENTMEMORY_CMD", "agentmemory-mcp").split()
 
@@ -93,7 +158,11 @@ def _context_from_agentmemory(n: int = 5) -> str | None:
     return None
 
 def context_block(n: int = 5) -> str:
-    """返回最近 N 条上下文文本（优先 agentmemory，降级本地文件）"""
+    """返回最近 N 条上下文文本（优先 mempalace → agentmemory → 本地文件）"""
+    try:
+        from eto.stitches.memory.mempalace import context_block as _mp_ctx
+        return _mp_ctx(n)
+    except: pass
     if _agentmemory_available():
         ctx = _context_from_agentmemory(n)
         if ctx:

@@ -121,4 +121,53 @@ p = ok(r)
 print(f"{OK_MARK if p else FAIL_MARK} shared_memory delete  KV 删除")
 all_ok = all_ok and p
 
+# ── File Coordination Tests ─────────────────────────────
+
+# file_update: 发布文件状态
+r = run(ROOT / "memory/shared_memory.py", {"fn": "file_update", "args": ["src/test.py", "agent-1", "abc123"]})
+p = ok(r) and '"ok"' in r.stdout and '"agent-1"' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} file_update           发布状态")
+all_ok = all_ok and p
+
+# file_status: 查询文件状态
+r = run(ROOT / "memory/shared_memory.py", {"fn": "file_status", "args": ["src/test.py"]})
+p = ok(r) and '"agent-1"' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} file_status           查询状态")
+all_ok = all_ok and p
+
+# file_release: 解除文件锁
+r = run(ROOT / "memory/shared_memory.py", {"fn": "file_release", "args": ["src/test.py"]})
+p = ok(r) and '"True"' in r.stdout or '"released": true' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} file_release          解除锁")
+all_ok = all_ok and p
+
+# ── pi-mempalace 测试 ──────────────────────────
+
+r = run(ROOT / "memory/mempalace.py", {"fn": "write", "args": ["test:mp", {"k": "v"}]})
+p = ok(r) and '"ok"' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} mempalace write       写入")
+all_ok = all_ok and p
+
+r = run(ROOT / "memory/mempalace.py", {"fn": "context_block", "args": [3]})
+p = ok(r) and "mempalace" in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} mempalace context     上下文")
+all_ok = all_ok and p
+
+# ── 动态 Agent 测试 ──────────────────────────
+
+r = run(ROOT / "bidding/workflow.py", {"fn": "select_agent", "args": ["写一个登录页", [{"id":"c","capabilities":["code","write"]},{"id":"r","capabilities":["research"]}]]})
+p = ok(r) and '"c"' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} select_agent code      选择编码员")
+all_ok = all_ok and p
+
+r = run(ROOT / "bidding/workflow.py", {"fn": "generate_steps", "args": ["调研 API 方案，然后写代码实现，最后审查安全"]})
+p = ok(r) and '"编码"' in r.stdout and '"审查"' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} generate_steps 3步     调研+编码+审查")
+all_ok = all_ok and p
+
+r = run(ROOT / "registry.py", {"fn": "get_available_agents", "args": []})
+p = ok(r) and '"coder"' in r.stdout and '"researcher"' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} registry agents        内置 3 Agent")
+all_ok = all_ok and p
+
 sys.exit(0 if all_ok else 1)

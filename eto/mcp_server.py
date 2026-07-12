@@ -89,6 +89,25 @@ def eto_feedback(agent: str, constraint: str) -> str:
     import json as _json
     return _json.dumps(save_constraint(agent, constraint), ensure_ascii=False)
 
+@mcp.tool(description="查询文件编辑状态，返回 {file, editor, ts}")
+def eto_file_status(file: str) -> str:
+    from eto.stitches.memory.shared_memory import file_status
+    import json as _json
+    result = file_status(file)
+    return _json.dumps(result, ensure_ascii=False)
+
+@mcp.tool(description="发布文件编辑状态（多 Agent 协调）")
+def eto_file_update(file: str, editor: str = "default", file_hash: str = "") -> str:
+    from eto.stitches.memory.shared_memory import file_update
+    import json as _json
+    return _json.dumps(file_update(file, editor, file_hash), ensure_ascii=False)
+
+@mcp.tool(description="解除文件锁（编辑完成后调用）")
+def eto_file_release(file: str) -> str:
+    from eto.stitches.memory.shared_memory import file_release
+    import json as _json
+    return _json.dumps({"released": file_release(file)}, ensure_ascii=False)
+
 def main():
     mcp.run(transport="stdio")
 

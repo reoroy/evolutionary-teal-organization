@@ -8,6 +8,7 @@ import { Type } from "typebox";
 import { execSync } from "child_process";
 import { join } from "path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { homedir } from "os";
 
 // ═══════════════════════════════════════════════════
 //  Agent Profile + Skills + Metrics
