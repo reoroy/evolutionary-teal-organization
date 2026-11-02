@@ -488,7 +488,9 @@ async function tryDispatchToMCPAgent(peerName: string, task: string): Promise<st
   if (!Array.isArray(cmd) || cmd.length === 0) return null;
 
   try {
-    const spec: Record<string, any> = { server_cmd: cmd, tool, task };
+    // agent 字段显式传入：Feedback Gate 的约束按 agent 名读写，
+    // 不再从 tool 名反推（tool=agent_execute 时反推恒为空串，见 issue #1 P0-6）
+    const spec: Record<string, any> = { server_cmd: cmd, tool, task, agent: peerName };
     const ds = peerCfg.dispatch_spec;
     if (ds) {
       if (ds.system_prompt) spec.system_prompt = ds.system_prompt;

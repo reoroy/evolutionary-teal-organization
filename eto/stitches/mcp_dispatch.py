@@ -30,13 +30,14 @@ def dispatch_with_spec(spec_json: str) -> dict:
         args["response_format"] = spec["response_format"]
     if spec.get("params"):
         args.update(spec["params"])
-    # 注入历史反馈约束
+    # 注入历史反馈约束（按 spec["agent"] 匹配；缺失时 feedback 侧记录并跳过）
     try:
         from eto.stitches.quality.feedback import inject_constraints
         spec = inject_constraints(spec)
         if spec.get("system_prompt"):
             args["system"] = spec["system_prompt"]
-    except: pass
+    except Exception as e:
+        print(json.dumps({"event": "inject_constraints_failed", "error": str(e)}), file=sys.stderr)
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
     from eto.mcp_client import sync_call_mcp

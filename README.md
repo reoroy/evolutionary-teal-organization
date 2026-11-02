@@ -48,7 +48,7 @@ Bootstrap 写入 Agent Profile、种子经验、**使用指南（`~/.eto/memory/
 
 ```bash
 python eto/stitches/test.py
-# 期望输出: 28 PASS
+# 期望输出: 31 PASS
 node --test tests/*.test.mjs
 # sentinel 预览注入防护测试
 ```
@@ -481,6 +481,8 @@ eto_clarify("帮我优化一下")
 ```
 
 Clarify Gate 已在 Pi 的路由中默认启用。Review / Feedback Gate 通过 MCP 工具 `eto_review` / `eto_feedback` 暴露，Agent 自行决定展示方式。
+
+Feedback 约束按 **agent 名**读写：`dispatch_spec` 构造时显式携带 `agent` 字段（`eto.ts` / `bidding/workflow.py`），`inject_constraints` 据此匹配——不再从 tool 名反推。spec 缺 `agent` 字段时跳过注入并在 stderr 留下 `constraints_skipped` 记录，不静默。
 
 ### context_block → agentmemory
 
