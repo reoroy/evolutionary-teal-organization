@@ -48,7 +48,7 @@ Bootstrap 写入 Agent Profile、种子经验、**使用指南（`~/.eto/memory/
 
 ```bash
 python eto/stitches/test.py
-# 期望输出: 33 PASS（未安装 mcp 包时走降级检查）
+# 期望输出: 36 PASS（未安装 mcp 包时走降级检查）
 pip install mcp && python eto/stitches/test.py
 # 装了 mcp 包后：含 "mcp peer score" 检查 —— 用 mock MCP server
 # 验证 provider="mcp" 的 peer 能拿到非空评分
