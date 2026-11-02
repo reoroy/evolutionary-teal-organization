@@ -4,3 +4,4 @@ rich>=13.0
 textual>=0.41
 prompt-toolkit>=3.0
 pyyaml>=6.0
+langgraph>=0.2.0
