@@ -161,7 +161,9 @@ def context_block(n: int = 5) -> str:
     """返回最近 N 条上下文文本（优先 mempalace → agentmemory → 本地文件）"""
     try:
         from eto.stitches.memory.mempalace import context_block as _mp_ctx
-        return _mp_ctx(n)
+        mp = _mp_ctx(n)
+        if mp:
+            return mp
     except: pass
     if _agentmemory_available():
         ctx = _context_from_agentmemory(n)

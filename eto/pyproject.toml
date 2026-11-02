@@ -3,6 +3,22 @@ name = "eto"
 version = "0.1.0"
 description = "ETO — Evolutionary Teal Organization: Bootstrap + Stitches"
 requires-python = ">=3.10"
+dependencies = [
+    "rich>=13.0",
+    "pyyaml>=6.0",
+    "mcp>=1.2,<2",
+    "langgraph>=0.2.0",
+]
+
+[project.scripts]
+eto-mesh = "eto.cli:main"
+eto-bootstrap = "eto.bootstrap.__main__:main"
+eto-mcp-server = "eto.mcp_server:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
+where = [".."]
 include = ["eto", "eto.*"]

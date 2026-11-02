@@ -488,7 +488,9 @@ async function tryDispatchToMCPAgent(peerName: string, task: string): Promise<st
   if (!Array.isArray(cmd) || cmd.length === 0) return null;
 
   try {
-    const spec: Record<string, any> = { server_cmd: cmd, tool, task };
+    // agent 字段显式传入：Feedback Gate 的约束按 agent 名读写，
+    // 不再从 tool 名反推（tool=agent_execute 时反推恒为空串，见 issue #1 P0-6）
+    const spec: Record<string, any> = { server_cmd: cmd, tool, task, agent: peerName };
     const ds = peerCfg.dispatch_spec;
     if (ds) {
       if (ds.system_prompt) spec.system_prompt = ds.system_prompt;
@@ -523,15 +525,15 @@ async function execPlan(task: string, route: RouteResult): Promise<string> {
   const coordinator = await electCoordinator(candidates);
 
   // Try MCP agent dispatch first
-  const mcpResult = await tryDispatchToMCPAgent(coordinator, task);
+  const mcpResult = await tryDispatchToMCPAgent(coordinator, contextTask);
   if (mcpResult) return mcpResult;
 
   // Fallback to current LLM path
   const steps = route.gewu === "code" ? ["调研需求", "编写代码", "审查质量"]
     : route.gewu === "research" ? ["收集信息", "深度分析", "整理报告"]
     : ["执行方案", "审查结果"];
-  const consensus = await peerConsensus(task, [coordinator, "auditor"]);
-  const outputs = await executePlanViaMaestro(task, steps);
+  const consensus = await peerConsensus(contextTask, [coordinator, "auditor"]);
+  const outputs = await executePlanViaMaestro(contextTask, steps);
   const ok = outputs.length > 0;
   if (ok) {
     const details = outputs.map((o: string, i: number) => `  >> Step ${i+1} (${steps[i]}):\n  ${o.slice(0, 300)}`).join("\n\n");
