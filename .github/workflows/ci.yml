@@ -196,3 +196,34 @@ jobs:
             if [ -f demo-output.txt ]; then cat demo-output.txt; else echo "No output captured."; fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Job 4: sentinel preview must never hand captured shell input to a shell
+  # (issue #7, P0-1). The Pi-independent module is tested directly.
+  sentinel-preview:
+    name: sentinel preview injection (Node 24)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Run sentinel preview tests
+        run: |
+          set -o pipefail
+          node --test tests/sentinel-preview.test.mjs 2>&1 | tee sentinel-preview-output.txt
+
+      - name: Publish test output to job summary
+        if: always()
+        run: |
+          {
+            echo "### sentinel preview injection (Node 24)"
+            echo ""
+            echo '```text'
+            if [ -f sentinel-preview-output.txt ]; then cat sentinel-preview-output.txt; else echo "No output captured."; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
