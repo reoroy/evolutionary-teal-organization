@@ -48,7 +48,9 @@ Bootstrap 写入 Agent Profile、种子经验、**使用指南（`~/.eto/memory/
 
 ```bash
 python eto/stitches/test.py
-# 期望输出: 17 PASS
+# 期望输出: 28 PASS
+node --test tests/*.test.mjs
+# sentinel 预览注入防护测试
 ```
 
 ### 一键安装全部依赖
