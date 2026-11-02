@@ -1,0 +1,198 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  EXPECTED_PASS: "25"
+
+jobs:
+  # Job 1: the demo must pass on a bare interpreter (no third-party packages,
+  # no Ollama). It is the merge gate: exit code 0, PASS=25, FAIL=0.
+  demo:
+    name: demo (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          # No pip cache: this job deliberately installs nothing, and the
+          # setup-python post step fails when the pip cache dir does not exist.
+
+      - name: Run demo
+        run: |
+          set -o pipefail
+          set +e
+          python3 eto/stitches/test.py 2>&1 | tee demo-output.txt
+          status=$?
+          set -e
+          echo "$status" > demo-exit-code.txt
+          exit "$status"
+
+      - name: Verify exit code and PASS/FAIL counts
+        if: always()
+        run: |
+          exit_code="$(cat demo-exit-code.txt 2>/dev/null || echo 1)"
+          python3 .github/scripts/check_demo_output.py demo-output.txt \
+            --expected-pass "$EXPECTED_PASS" \
+            --exit-code "$exit_code"
+
+      - name: Publish demo output to job summary
+        if: always()
+        run: |
+          {
+            echo "### demo — \`python3 eto/stitches/test.py\` (Python ${{ matrix.python-version }})"
+            echo ""
+            echo '```text'
+            if [ -f demo-output.txt ]; then cat demo-output.txt; else echo "No output captured."; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Job 2: verify the documented install path in a fresh venv (issue #1, P0-2).
+  install-smoke:
+    name: clean install smoke (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Create venv and install requirements
+        run: |
+          set -o pipefail
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install -r requirements.txt 2>&1 | tee install-output.txt
+
+      - name: Run demo in the fresh venv
+        run: |
+          set -o pipefail
+          set +e
+          /tmp/venv/bin/python eto/stitches/test.py 2>&1 | tee demo-output.txt
+          status=$?
+          set -e
+          echo "$status" > demo-exit-code.txt
+          exit "$status"
+
+      - name: Verify exit code and PASS/FAIL counts
+        if: always()
+        run: |
+          exit_code="$(cat demo-exit-code.txt 2>/dev/null || echo 1)"
+          python3 .github/scripts/check_demo_output.py demo-output.txt \
+            --expected-pass "$EXPECTED_PASS" \
+            --exit-code "$exit_code"
+
+      - name: Publish install and demo output to job summary
+        if: always()
+        run: |
+          {
+            echo "### clean install smoke (Python ${{ matrix.python-version }})"
+            echo ""
+            echo "#### \`pip install -r requirements.txt\`"
+            echo '```text'
+            if [ -f install-output.txt ]; then cat install-output.txt; else echo "No output captured."; fi
+            echo '```'
+            echo "#### \`/tmp/venv/bin/python eto/stitches/test.py\`"
+            echo '```text'
+            if [ -f demo-output.txt ]; then cat demo-output.txt; else echo "No output captured."; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Job 3: langgraph is optional. Without it, select_agent/generate_steps and
+  # the rest of the demo must still work (issue #2 regression guard).
+  without-langgraph:
+    name: no-langgraph degradation (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install requirements without langgraph
+        run: |
+          set -o pipefail
+          python3 -m venv /tmp/venv
+          grep -v '^langgraph' requirements.txt > /tmp/requirements-no-langgraph.txt
+          /tmp/venv/bin/pip install -r /tmp/requirements-no-langgraph.txt 2>&1 | tee install-output.txt
+
+      - name: Assert langgraph is not installed
+        run: |
+          /tmp/venv/bin/python - <<'PY'
+          import importlib.util
+          import sys
+
+          if importlib.util.find_spec("langgraph") is not None:
+              sys.exit("langgraph is installed, but this job must run without it")
+          print("langgraph is not installed, as required")
+          PY
+
+      - name: Run demo without langgraph
+        run: |
+          set -o pipefail
+          set +e
+          /tmp/venv/bin/python eto/stitches/test.py 2>&1 | tee demo-output.txt
+          status=$?
+          set -e
+          echo "$status" > demo-exit-code.txt
+          exit "$status"
+
+      - name: Verify exit code and PASS/FAIL counts
+        if: always()
+        run: |
+          exit_code="$(cat demo-exit-code.txt 2>/dev/null || echo 1)"
+          python3 .github/scripts/check_demo_output.py demo-output.txt \
+            --expected-pass "$EXPECTED_PASS" \
+            --exit-code "$exit_code"
+
+      - name: Publish demo output to job summary
+        if: always()
+        run: |
+          {
+            echo "### no-langgraph degradation — \`python3 eto/stitches/test.py\` (Python ${{ matrix.python-version }})"
+            echo ""
+            echo '```text'
+            if [ -f demo-output.txt ]; then cat demo-output.txt; else echo "No output captured."; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
