@@ -2,7 +2,17 @@
 import json, sys
 from pathlib import Path
 from typing import TypedDict, List
-from langgraph.graph import StateGraph, END
+
+try:
+    from langgraph.graph import StateGraph, END
+    _LANGGRAPH_AVAILABLE = True
+except ImportError:
+    # langgraph 是可选依赖（README「不装会怎样」：降级到竞标/关键词）。
+    # 缺失时仅建图/执行工作流不可用，select_agent / generate_steps 等保持可用。
+    StateGraph = None
+    END = "__end__"
+    _LANGGRAPH_AVAILABLE = False
+
 sys.stdout.reconfigure(encoding="utf-8")
 
 OLLAMA_URL = "http://localhost:11434"
@@ -294,7 +304,9 @@ def _make_router(condition: dict, current_node: str, next_node: str):
         return next_node
     return router
 
-def build_graph(workflow_design: dict) -> StateGraph:
+def build_graph(workflow_design: dict) -> "StateGraph":
+    if not _LANGGRAPH_AVAILABLE:
+        raise RuntimeError("langgraph 未安装，无法构建工作流图。请先运行: pip install 'langgraph>=0.2.0'")
     steps = workflow_design["steps"]
     graph = StateGraph(WorkflowState)
     for i, step in enumerate(steps):

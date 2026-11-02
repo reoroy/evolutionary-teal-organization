@@ -95,6 +95,7 @@ all_ok = all_ok and p
 r = run(ROOT / "mcp_dispatch.py", {"fn": "dispatch", "args": ["[]", "tool", "task"]})
 p = ok(r) and ('{}' in r.stdout or '_error' in r.stdout)
 print(f"{OK_MARK if p else FAIL_MARK} mcp dispatch empty   优雅降级")
+all_ok = all_ok and p
 
 # 合法参数但无实际 MCP 服务 → 降级不崩溃
 r = run(ROOT / "mcp_dispatch.py", {"fn": "dispatch", "args": [json.dumps(["nonexistent"]), "test", "hi"]})
@@ -107,14 +108,17 @@ all_ok = all_ok and p
 r = run(ROOT / "memory/shared_memory.py", {"fn": "write", "args": ["test:mem", {"msg": "hello"}]})
 p = ok(r) and '_error' not in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} shared_memory write   KV 写入")
+all_ok = all_ok and p
 
 r = run(ROOT / "memory/shared_memory.py", {"fn": "read", "args": ["test:mem"]})
 p = ok(r) and '"hello"' in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} shared_memory read    KV 读取")
+all_ok = all_ok and p
 
 r = run(ROOT / "memory/shared_memory.py", {"fn": "context_block", "args": [3]})
 p = ok(r) and ('TealContext' in r.stdout or r.stdout.strip() == '""')
 print(f"{OK_MARK if p else FAIL_MARK} shared_memory ctx     context_block")
+all_ok = all_ok and p
 
 r = run(ROOT / "memory/shared_memory.py", {"fn": "delete", "args": ["test:mem"]})
 p = ok(r)
@@ -135,9 +139,9 @@ p = ok(r) and '"agent-1"' in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} file_status           查询状态")
 all_ok = all_ok and p
 
-# file_release: 解除文件锁
+# file_release: 解除文件锁（实现按 stitch 约定返回 JSON 布尔值 true/false）
 r = run(ROOT / "memory/shared_memory.py", {"fn": "file_release", "args": ["src/test.py"]})
-p = ok(r) and '"True"' in r.stdout or '"released": true' in r.stdout
+p = ok(r) and r.stdout.strip() == "true"
 print(f"{OK_MARK if p else FAIL_MARK} file_release          解除锁")
 all_ok = all_ok and p
 
@@ -156,12 +160,17 @@ all_ok = all_ok and p
 # ── 动态 Agent 测试 ──────────────────────────
 
 r = run(ROOT / "bidding/workflow.py", {"fn": "select_agent", "args": ["写一个登录页", [{"id":"c","capabilities":["code","write"]},{"id":"r","capabilities":["research"]}]]})
-p = ok(r) and '"c"' in r.stdout
+p = ok(r) and r.stdout.strip() == "c"
 print(f"{OK_MARK if p else FAIL_MARK} select_agent code      选择编码员")
 all_ok = all_ok and p
 
 r = run(ROOT / "bidding/workflow.py", {"fn": "generate_steps", "args": ["调研 API 方案，然后写代码实现，最后审查安全"]})
-p = ok(r) and '"编码"' in r.stdout and '"审查"' in r.stdout
+try:
+    steps = json.loads(r.stdout) if ok(r) else []
+except json.JSONDecodeError:
+    steps = []
+descs = " ".join(s.get("description", "") for s in steps)
+p = ok(r) and len(steps) == 3 and all(k in descs for k in ("调研", "编码", "审查"))
 print(f"{OK_MARK if p else FAIL_MARK} generate_steps 3步     调研+编码+审查")
 all_ok = all_ok and p
 
