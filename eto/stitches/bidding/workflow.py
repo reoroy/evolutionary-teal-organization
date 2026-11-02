@@ -277,7 +277,7 @@ def _make_node_fn(step: dict):
 
         try:
             from eto.stitches.mcp_dispatch import dispatch_with_spec
-            spec = json.dumps({"server_cmd": ["python", "-m", "eto.mcp_server"], "tool": "agent_execute", "task": state["task"], "system_prompt": sp, "skills": skills, "mcp_tools": tools, "params": {}})
+            spec = json.dumps({"server_cmd": ["python", "-m", "eto.mcp_server"], "tool": "agent_execute", "agent": step["agent"], "task": state["task"], "system_prompt": sp, "skills": skills, "mcp_tools": tools, "params": {}})
             result = dispatch_with_spec(spec)
             output = json.dumps(result, ensure_ascii=False)[:500] if result else ""
             state["step_results"].append({"agent": step["agent"], "status": "ok", "output": output, "retries": 0})
