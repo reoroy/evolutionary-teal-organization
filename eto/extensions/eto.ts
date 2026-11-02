@@ -9,6 +9,7 @@ import { execSync } from "child_process";
 import { join } from "path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
+import { buildPreviewPlan, compileRulePattern, executePreviewPlan } from "./sentinel-preview.mjs";
 
 // ═══════════════════════════════════════════════════
 //  Agent Profile + Skills + Metrics
@@ -406,10 +407,10 @@ async function executePlanViaMaestro(task: string, steps: string[]): Promise<any
   }
 
   function generatePreview(cmd: string): string {
-    if (/rm\s+-rf\s+(\S+)/.test(cmd)) return `ls -la ${RegExp.$1} 2>&1 | head -20`;
-    if (/dd\s+if=(\S+)/.test(cmd)) return `lsblk 2>&1 | head -10`;
-    if (/rm\s+(\S+)/.test(cmd)) return `ls -la ${RegExp.$1} 2>&1 && wc -c ${RegExp.$1} 2>&1`;
-    return "";
+    const plan = buildPreviewPlan(cmd, process.cwd());
+    if (!plan) return "";
+    if (!plan.ok) return `[预览已拒绝] ${plan.reason}`;
+    return executePreviewPlan(plan, { timeoutMs: 5000 });
   }
 
   async function checkSentinel(event: any, ctx: any): Promise<{ block: true; reason: string } | null> {
@@ -420,7 +421,14 @@ async function executePlanViaMaestro(task: string, steps: string[]): Promise<any
     for (const rule of sortedRules) {
       if (rule.type === "block" || rule.type === "confirm") {
         if (!matchTool(event.toolName, rule.trigger)) continue;
-        if (rule.pattern && !new RegExp(rule.pattern, "i").test(input)) continue;
+        if (rule.pattern) {
+          const compiled = compileRulePattern(rule.pattern);
+          if (!compiled.regex) {
+            console.warn(`[智子] 规则 "${rule.name}" 的正则无效，已跳过: ${compiled.error || "空正则"}`);
+            continue;
+          }
+          if (!compiled.regex.test(input)) continue;
+        }
         if (!checkRateLimit(rule.name)) return { block: true, reason: `频率限制: ${rule.name}` };
         if (checkDeadlock(rule.name)) return null;
 
@@ -431,11 +439,7 @@ async function executePlanViaMaestro(task: string, steps: string[]): Promise<any
 
         // confirm with preview
         const cmd = event.input?.command || "";
-        const previewCmd = generatePreview(cmd);
-        let preview = "";
-        if (previewCmd) {
-          try { preview = execSync(previewCmd, { timeout: 5000, encoding: "utf-8" }).toString().trim(); } catch {}
-        }
+        const preview = generatePreview(cmd);
         const blockCount = blockCounters.get(rule.name) || 0;
         const msg = `[${rule.name}] (已拦 ${blockCount} 次)\n操作：${cmd.slice(0, 80)}\n` + (preview ? `影响预览:\n${preview.slice(0, 300)}` : "");
         const ok = await ctx.ui.confirm("⛔ 智子安检", msg);
