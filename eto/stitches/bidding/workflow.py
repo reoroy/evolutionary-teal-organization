@@ -276,14 +276,13 @@ def _make_node_fn(step: dict):
             sp = f"[上一步 {last.get('agent','?')}]: {out}\n\n{sp}"
 
         try:
-            import sys as _sys
-            from pathlib import Path as _Path
-            _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent.parent.parent))
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
             from eto.stitches.mcp_dispatch import dispatch_with_spec
             # 用 sys.executable 保证子进程 MCP server 用当前解释器（"python" 在
-            # 某些环境不存在，会静默变成 dispatch 空结果 → 假成功）
+            # 某些环境不存在，会静默变成 dispatch 空结果 → 假成功）；
+            # agent 字段显式传入，feedback 约束按 agent 名注入（issue #1 P0-6）
             server_cmd = [sys.executable, "-m", "eto.mcp_server"]
-            spec = json.dumps({"server_cmd": server_cmd, "tool": "agent_execute", "task": state["task"], "system_prompt": sp, "skills": skills, "mcp_tools": tools, "params": {}})
+            spec = json.dumps({"server_cmd": server_cmd, "tool": "agent_execute", "agent": step["agent"], "task": state["task"], "system_prompt": sp, "skills": skills, "mcp_tools": tools, "params": {}})
             result = dispatch_with_spec(spec)
             # 假成功防线：dispatch 返回空 / _error / status=failed 都必须标 failed，
             # 否则工作流对外报告「已完成」而每步输出为空。

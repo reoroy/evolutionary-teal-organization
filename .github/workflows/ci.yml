@@ -70,6 +70,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # Job 2: verify the documented install path in a fresh venv (issue #1, P0-2).
+  # The primary README path is `make setup` → `pip install -e eto/`, so the
+  # smoke installs the eto package itself, then checks the entry points and
+  # imports the MCP server before running the demo.
   install-smoke:
     name: clean install smoke (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -87,13 +90,23 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            eto/pyproject.toml
+            requirements.txt
 
-      - name: Create venv and install requirements
+      - name: Create venv and install the eto package
         run: |
           set -o pipefail
           python3 -m venv /tmp/venv
-          /tmp/venv/bin/pip install -r requirements.txt 2>&1 | tee install-output.txt
+          /tmp/venv/bin/pip install -e eto/ 2>&1 | tee install-output.txt
+
+      - name: Smoke-check entry points and imports
+        run: |
+          set -o pipefail
+          /tmp/venv/bin/eto-mesh --help 2>&1 | tee smoke-output.txt
+          /tmp/venv/bin/eto-bootstrap --help 2>&1 | tee -a smoke-output.txt
+          /tmp/venv/bin/python -c "import eto.mcp_server; print('import eto.mcp_server OK')" 2>&1 | tee -a smoke-output.txt
+          /tmp/venv/bin/python -c "import langgraph; print('import langgraph OK')" 2>&1 | tee -a smoke-output.txt
 
       - name: Run demo in the fresh venv
         run: |
@@ -119,9 +132,13 @@ jobs:
           {
             echo "### clean install smoke (Python ${{ matrix.python-version }})"
             echo ""
-            echo "#### \`pip install -r requirements.txt\`"
+            echo "#### \`pip install -e eto/\`"
             echo '```text'
             if [ -f install-output.txt ]; then cat install-output.txt; else echo "No output captured."; fi
+            echo '```'
+            echo "#### entry points / imports"
+            echo '```text'
+            if [ -f smoke-output.txt ]; then cat smoke-output.txt; else echo "No output captured."; fi
             echo '```'
             echo "#### \`/tmp/venv/bin/python eto/stitches/test.py\`"
             echo '```text'
@@ -148,7 +165,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            eto/pyproject.toml
+            requirements.txt
 
       - name: Install requirements without langgraph
         run: |

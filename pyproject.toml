@@ -9,18 +9,12 @@ description = "ETO — 青色组织多 Agent 编排架构 / Multi-agent Teal Org
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-dependencies = [
-    "protolink>=0.3",
-    "rich>=13.0",
-    "textual>=0.41",
-    "prompt-toolkit>=3.0",
-    "pyyaml>=6.0",
-    "langgraph>=0.2.0",
-]
+# 依赖与入口的单一真源是 eto/pyproject.toml（`pip install -e eto/` 是文档主安装路径）。
+# root 包只为仓库元数据存在，不再重复声明运行依赖或 CLI 入口，避免两处漂移。
+dynamic = ["dependencies"]
 
-[project.scripts]
-eto = "src.tui:main"
-eto-mesh = "eto.cli:main"
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools.packages.find]
-include = ["eto*", "src*"]
+include = ["eto*"]

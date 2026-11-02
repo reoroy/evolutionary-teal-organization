@@ -53,11 +53,12 @@ node --test tests/*.test.mjs
 # sentinel 预览注入防护测试
 ```
 
+`make setup`（即 `pip install -e eto/`）装完即带全部运行依赖（rich / pyyaml / mcp / langgraph），并注册 `eto-mesh`、`eto-bootstrap`、`eto-mcp-server` 三个命令。依赖声明的单一真源是 `eto/pyproject.toml`；根目录 `requirements.txt` 与其保持同步（供 `pip install -r` 场景使用），改依赖时两处一起改。
+
 ### 一键安装全部依赖
 
 ```bash
-# 核心依赖（必装）
-pip install langgraph
+# 核心依赖已随 pip install -e eto/ 安装（见 eto/pyproject.toml）
 
 # LLM 后端（至少选一个）
 ollama pull qwen2.5-coder:7b    # 本地模型，免费
@@ -81,7 +82,7 @@ npx -y @agentmemory/mcp          # agentmemory 中央记忆库
 ### 前提：本机注册
 
 ```bash
-pip install git+https://github.com/reoroy/evolutionary-teal-organization.git
+pip install "git+https://github.com/reoroy/evolutionary-teal-organization.git#subdirectory=eto"
 eto-mesh join             # 注册本机到 Mesh
 eto-mesh status           # 确认在线
 ```
@@ -99,7 +100,7 @@ eto-mesh status           # 确认在线
 安装后在对应平台注册：
 
 ```bash
-pip install git+https://github.com/reoroy/evolutionary-teal-organization.git
+pip install "git+https://github.com/reoroy/evolutionary-teal-organization.git#subdirectory=eto"
 eto-mesh join              # 注册到同一 Mesh
 eto-mesh status            # 应看到两个 Agent 在线
 ```
@@ -482,6 +483,8 @@ eto_clarify("帮我优化一下")
 ```
 
 Clarify Gate 已在 Pi 的路由中默认启用。Review / Feedback Gate 通过 MCP 工具 `eto_review` / `eto_feedback` 暴露，Agent 自行决定展示方式。
+
+Feedback 约束按 **agent 名**读写：`dispatch_spec` 构造时显式携带 `agent` 字段（`eto.ts` / `bidding/workflow.py`），`inject_constraints` 据此匹配——不再从 tool 名反推。spec 缺 `agent` 字段时跳过注入并在 stderr 留下 `constraints_skipped` 记录，不静默。
 
 ### context_block → agentmemory
 

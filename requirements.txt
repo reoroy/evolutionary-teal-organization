@@ -1,7 +1,8 @@
-# ETO 依赖 (pip install -r requirements.txt)
-protolink>=0.3
+# ETO 运行依赖。
+# 单一真源是 eto/pyproject.toml 的 [project].dependencies；本文件与其保持一致，
+# 供 `pip install -r requirements.txt`（CI 与无 -e 安装场景）使用。
+# 改依赖时两处同步改。
 rich>=13.0
-textual>=0.41
-prompt-toolkit>=3.0
 pyyaml>=6.0
+mcp>=1.2,<2
 langgraph>=0.2.0
