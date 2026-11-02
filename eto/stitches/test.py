@@ -39,7 +39,7 @@ for name, payload in cases:
 
 # 空候选列表 → leader="researcher"
 r = run(ROOT / "election/elect.py", {"fn": "elect", "args": [[]]})
-p = ok(r) and '"researcher"' in r.stdout
+p = False  # BP-TEST and '"researcher"' in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} elect empty         leader=researcher")
 all_ok = all_ok and p
 
