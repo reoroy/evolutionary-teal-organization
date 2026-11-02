@@ -33,6 +33,7 @@ pip install -e /path/to/eto     # 或 pip install eto
 | `eto_consensus` | 三阶段共识评分（评分→审议→终审） | `{"plan": "格式化硬盘", "peers": ["researcher","coder","auditor"]}` |
 | `eto_route` | 三镜路由分类 | `{"task": "写一个Python程序"}` |
 | `eto_peer_config` | 读取 Peer Provider 配置 | `{}` |
+| `agent_execute` | 执行一步 Agent 任务（LangGraph 工作流调用）：路由到已配置 peer provider；空输出/异常返回 `status: failed` + reason | `{"task": "写一个hello world", "system": "你是编码员"}` |
 
 ## 快速测试
 

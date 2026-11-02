@@ -824,11 +824,13 @@ export default function (pi: ExtensionAPI) {
       if (workflowSteps && workflowSteps.length > 1) {
         const execResult = await callStitchAsync("bidding.workflow", "execute_workflow", JSON.stringify(wfResult), task);
         const exec = execResult as any;
-        const stepLines = (exec?.step_results || []).map((r: any, i: number) => `  >> Step ${i+1} (${r.agent}): ${r.status}`).join("\n");
-        ctx.ui.notify(`✅ 工作流完成`, "info");
-        routeLines.push(`## ETO 工作流 | 协调员: ${coordinator}`);
+        const stepLines = (exec?.step_results || []).map((r: any, i: number) => `  >> Step ${i+1} (${r.agent}): ${r.status}${r.status === "failed" && r.error ? ` — ${String(r.error).slice(0, 120)}` : ""}`).join("\n");
+        const wfOk = exec?.success === true;
+        ctx.ui.notify(wfOk ? `✅ 工作流完成` : `⚠️ 工作流有失败步骤`, "info");
+        routeLines.push(`## ETO 工作流 | 协调员: ${coordinator} | ${wfOk ? "成功" : "失败"}`);
         routeLines.push(stepLines);
-        widgetLines.push(`🔄 ${(wfResult as any).workflow || "workflow"} (${exec?.total_steps || 0} 步)`);
+        for (const err of ((exec?.errors || []) as string[])) routeLines.push(`  !! ${err.slice(0, 200)}`);
+        widgetLines.push(wfOk ? `🔄 ${(wfResult as any).workflow || "workflow"} (${exec?.total_steps || 0} 步)` : `⚠️ ${(wfResult as any).workflow || "workflow"} 失败 (${(exec?.errors || []).length} 项错误)`);
         ctx.ui.setWidget("eto-route", widgetLines);
         return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
       }

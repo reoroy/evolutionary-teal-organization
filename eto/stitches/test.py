@@ -228,4 +228,53 @@ p = ok(r) and '"coder"' in r.stdout and '"researcher"' in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} registry agents        内置 3 Agent")
 all_ok = all_ok and p
 
+# ── LangGraph 工作流假成功防线（issue #13: P0-3）────────────
+# 语义：dispatch 返回空/报错/失败时，步骤必须标 failed 并暴露 error，
+# 绝不允许「空输出 + status:ok」的静默假成功。run_step 不依赖 langgraph 建图，
+# 三种环境（裸解释器 / 仅 langgraph / 完整依赖）都能跑。
+
+wf_step = json.dumps({"step": 1, "agent": "coder", "description": "编码", "system_prompt": "写代码", "skills": [], "mcp_tools": []})
+
+# 1. 假成功不变量：run_step 不允许「空输出 + status:ok」。
+#    - 无 provider 环境（CI 的三种 job 都是）：dispatch 落空 → 必须 failed + 非空 error。
+#    - 有 provider 环境（如本地 fake MCP）：ok 必须伴随非空 output。
+#    修复前这里是 status=ok + 空输出的静默假成功。
+r = run(ROOT / "bidding/workflow.py", {"fn": "run_step", "args": [wf_step, "写一个hello world"]})
+try:
+    step_result = json.loads(r.stdout) if ok(r) else {}
+except json.JSONDecodeError:
+    step_result = {}
+_status, _output, _error = step_result.get("status"), step_result.get("output", ""), step_result.get("error", "")
+p = (
+    (_status == "failed" and not _output and bool(_error))
+    or (_status == "ok" and bool(_output))
+)
+print(f"{OK_MARK if p else FAIL_MARK} wf 空输出→failed     状态/输出一致")
+all_ok = all_ok and p
+
+# 2. mcp_server 源码必须注册 agent_execute 工具（AST 断言，无需 mcp 包）
+#    修复前 server 只暴露 12 个工具、没有 agent_execute，工作流每步调空。
+import ast as _ast
+_srv_src = (ROOT.parent / "mcp_server.py").read_text(encoding="utf-8")
+_registered = [
+    n.name for n in _ast.walk(_ast.parse(_srv_src))
+    if isinstance(n, _ast.FunctionDef)
+    and any(isinstance(d, _ast.Call) and getattr(d.func, "attr", "") == "tool" for d in n.decorator_list)
+]
+p = "agent_execute" in _registered
+print(f"{OK_MARK if p else FAIL_MARK} wf agent_execute      MCP server已注册")
+all_ok = all_ok and p
+
+# 3. 成功路径必须有非空输出：mcp 包可用时走真实 agent_execute（无 provider 环境
+#    仍会 failed，由用例 1 覆盖）；mcp 不可用时跳过真实调用，只验证 dispatch 链路
+#    的成功分支存在（源码断言，防止 ok 分支丢失非空输出检查）。
+_wf_src = (ROOT / "bidding/workflow.py").read_text(encoding="utf-8")
+_node_fn = _wf_src[_wf_src.index("def _make_node_fn"): _wf_src.index("def _make_router")]
+p = (
+    'state["step_results"].append({"agent": step["agent"], "status": "ok", "output": output' in _node_fn
+    and 'not output.strip()' in _node_fn
+)
+print(f"{OK_MARK if p else FAIL_MARK} wf ok-branch非空输出  状态语义完整")
+all_ok = all_ok and p
+
 sys.exit(0 if all_ok else 1)

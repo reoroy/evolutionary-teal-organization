@@ -108,6 +108,33 @@ def eto_file_release(file: str) -> str:
     import json as _json
     return _json.dumps({"released": file_release(file)}, ensure_ascii=False)
 
+@mcp.tool(description="执行一步 Agent 任务：把 task+system_prompt 路由到已配置的 peer provider（ollama/deepseek/claude/mcp），返回 {status, agent, output}；无可用 provider 时 status=failed 并给出原因，绝不返回空 ok")
+def agent_execute(task: str, system: str = "", skills: list[str] | None = None, mcp_tools: list[str] | None = None, response_format: str = "") -> str:
+    """LangGraph 工作流每步调用的执行入口。
+
+    真实执行走 consensus/vote.py 的 peer provider 路由（复用 ~/.pi/eto-config.json
+    的 ollama/deepseek/claude/mcp 配置），而不是让工作流自己吞掉空输出。
+    provider 不可用/返回空时明确 status=failed + reason，调用方据此标 failed。
+    """
+    from eto.stitches.consensus.vote import _call_provider, _load_peer_config
+    agent = "coder"  # 默认执行 peer；工作流按 step.agent 在 spec.params 里覆盖
+    cfg = _load_peer_config().get(agent, {})
+    provider = cfg.get("provider", "ollama")
+    # mcp provider 的 "model" 参数承载完整 peer 配置 JSON（见 vote._call_provider）
+    model = json.dumps(cfg, ensure_ascii=False) if provider == "mcp" else cfg.get("model", "")
+    full_system = system or f"执行以下任务:\n{task}"
+    if skills:
+        full_system += "\n\n可用 skills: " + ", ".join(skills)
+    if mcp_tools:
+        full_system += "\n\n可用 MCP 工具: " + ", ".join(mcp_tools)
+    try:
+        output = _call_provider(provider, model, full_system, task)
+    except Exception as e:
+        return json.dumps({"status": "failed", "agent": agent, "output": "", "reason": f"provider {provider} 抛出异常: {e}"}, ensure_ascii=False)
+    if not output:
+        return json.dumps({"status": "failed", "agent": agent, "output": "", "reason": f"provider {provider} 返回空输出（服务未启动或不可用）"}, ensure_ascii=False)
+    return json.dumps({"status": "ok", "agent": agent, "output": output}, ensure_ascii=False)
+
 def main():
     mcp.run(transport="stdio")
 

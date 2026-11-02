@@ -1,5 +1,6 @@
 """ETO Stitch: 三阶段共识投票（评分→审议→终审）"""
 import io, json, os, sys, urllib.request, urllib.error
+from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 
 OLLAMA_URL = "http://localhost:11434"
@@ -100,7 +101,7 @@ def _call_mcp_agent(config_json: str, system: str, prompt: str) -> str:
     """通过 MCP Client 调其他 Agent 的工具评分"""
     try:
         import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
         from eto.mcp_client import sync_call_mcp
         cfg = json.loads(config_json)
         cmd = cfg.get("mcp_server", [])
