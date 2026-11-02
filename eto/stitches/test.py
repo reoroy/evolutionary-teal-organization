@@ -1,5 +1,5 @@
 """Verify all stitcher layers work via stdin pipe"""
-import json, subprocess, sys
+import json, os, re, subprocess, sys, tempfile
 from pathlib import Path
 
 # Windows GBK 终端兼容
@@ -155,6 +155,55 @@ all_ok = all_ok and p
 r = run(ROOT / "memory/mempalace.py", {"fn": "context_block", "args": [3]})
 p = ok(r) and "mempalace" in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} mempalace context     上下文")
+all_ok = all_ok and p
+
+# ── TealContext 注入链路测试（issue #14: P0-4）────────────
+
+# 降级链：mempalace 为空 → 本地文件。隔离 HOME 防止真实 ~/.eto 干扰：
+# 先写 shared_memory，再在无 mempalace 的环境里调 context_block，必须返回刚写的条目。
+with tempfile.TemporaryDirectory() as tmp_home:
+    env = {**os.environ, "HOME": tmp_home}
+    r = subprocess.run(
+        [PY, "-c",
+         "import sys; sys.path.insert(0, %r);" % str(ROOT.parent.parent) +
+         "from eto.stitches.memory.shared_memory import write, context_block; "
+         "write('consensus:last', {'type': 'consensus', 'status': 'passed', 'final_score': 0.9}); "
+         "print(context_block(5))"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, env=env,
+    )
+    p = r.returncode == 0 and "consensus" in r.stdout and "0.9" in r.stdout
+    print(f"{OK_MARK if p else FAIL_MARK} ctx fallback         mempalace空→本地降级")
+    all_ok = all_ok and p
+
+# 降级链另一方向：mempalace 有数据时优先返回（不被 shared_memory 抢占）。
+with tempfile.TemporaryDirectory() as tmp_home:
+    env = {**os.environ, "HOME": tmp_home}
+    r = subprocess.run(
+        [PY, "-c",
+         "import sys; sys.path.insert(0, %r);" % str(ROOT.parent.parent) +
+         "from eto.stitches.memory import mempalace, shared_memory; "
+         "mempalace.write('mp:prio', {'type': 'plan_step', 'step': 1, 'total': 2, 'status': 'ok'}); "
+         "shared_memory.write('sm:other', {'type': 'consensus', 'status': 'passed'}); "
+         "print(shared_memory.context_block(5))"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, env=env,
+    )
+    p = r.returncode == 0 and "mempalace" in r.stdout and "plan_step" in r.stdout
+    print(f"{OK_MARK if p else FAIL_MARK} ctx priority         mempalace非空→优先")
+    all_ok = all_ok and p
+
+# 注入真的进了 dispatch：eto.ts execPlan 必须把 contextTask 传给
+# tryDispatchToMCPAgent / executePlanViaMaestro / peerConsensus（源码断言，防回归）。
+ts_src = (ROOT.parent / "extensions" / "eto.ts").read_text(encoding="utf-8")
+m = re.search(r"async function execPlan\(task: string[^{]*\{(.*?)\n\}", ts_src, re.DOTALL)
+p = bool(m) and all(
+    call in m.group(1)
+    for call in (
+        "tryDispatchToMCPAgent(coordinator, contextTask)",
+        "peerConsensus(contextTask,",
+        "executePlanViaMaestro(contextTask, steps)",
+    )
+) and "tryDispatchToMCPAgent(coordinator, task)" not in m.group(1)
+print(f"{OK_MARK if p else FAIL_MARK} ctx dispatch         execPlan用contextTask")
 all_ok = all_ok and p
 
 # ── 动态 Agent 测试 ──────────────────────────
