@@ -62,7 +62,7 @@ node --test tests/*.test.mjs
 
 | job | 验证内容 |
 |:----|:---------|
-| `demo` | 裸解释器（不装任何第三方包）直接跑 `eto/stitches/test.py`，断言退出码 0、PASS 数精确匹配（当前 33）、0 FAIL（Python 3.11 / 3.13 矩阵） |
+| `demo` | 裸解释器（不装任何第三方包）直接跑 `eto/stitches/test.py`，断言退出码 0、PASS 数精确匹配（当前 36）、0 FAIL（Python 3.11 / 3.13 矩阵） |
 | `clean install smoke` | 干净 venv 里 `pip install -e eto/`，检查 `eto-mesh` / `eto-bootstrap` 入口与导入，再跑一遍 demo 并同样断言 |
 | `no-langgraph degradation` | 安装去掉 langgraph 的 requirements，确认 langgraph 未安装、demo 仍全过（可选依赖降级路径的回归守卫） |
 | `sentinel preview injection` | Node 24 跑 `node --test tests/*.test.mjs`，验证安检预览不把捕获的 shell 输入喂给 shell |
