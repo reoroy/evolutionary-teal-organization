@@ -58,6 +58,16 @@ node --test tests/*.test.mjs
 
 `make setup`（即 `pip install -e eto/`）装完即带全部运行依赖（rich / pyyaml / mcp / langgraph），并注册 `eto-mesh`、`eto-bootstrap`、`eto-mcp-server` 三个命令。依赖声明的单一真源是 `eto/pyproject.toml`；根目录 `requirements.txt` 与其保持同步（供 `pip install -r` 场景使用），改依赖时两处一起改。
 
+**CI 检查项**：push / PR 会触发 5 个 job（定义见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)）：
+
+| job | 验证内容 |
+|:----|:---------|
+| `demo` | 裸解释器（不装任何第三方包）直接跑 `eto/stitches/test.py`，断言退出码 0、PASS 数精确匹配（当前 33）、0 FAIL（Python 3.11 / 3.13 矩阵） |
+| `clean install smoke` | 干净 venv 里 `pip install -e eto/`，检查 `eto-mesh` / `eto-bootstrap` 入口与导入，再跑一遍 demo 并同样断言 |
+| `no-langgraph degradation` | 安装去掉 langgraph 的 requirements，确认 langgraph 未安装、demo 仍全过（可选依赖降级路径的回归守卫） |
+| `sentinel preview injection` | Node 24 跑 `node --test tests/*.test.mjs`，验证安检预览不把捕获的 shell 输入喂给 shell |
+| `mcp peer scoring` | 安装含 mcp 的 requirements 后跑 demo（mock MCP server），断言 "mcp peer score" 检查存在且通过 |
+
 ### 一键安装全部依赖
 
 ```bash
