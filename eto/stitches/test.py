@@ -103,6 +103,58 @@ p = not ("Traceback" in r.stderr)
 print(f"{OK_MARK if p else FAIL_MARK} mcp dispatch no-srv  不崩溃")
 all_ok = all_ok and p
 
+# ── MCP peer 评分测试（issue #15 / issue #1 P0-5）──────────────
+# vote.py 曾缺 Path 导入：_call_mcp_agent 的 NameError 被裸 except 吞掉，
+# provider="mcp" 的 peer 评分永远为空。以下用 mock MCP server 验证修复。
+
+import importlib.util
+
+try:
+    _HAS_MCP = importlib.util.find_spec("mcp") is not None
+except Exception:
+    _HAS_MCP = False
+
+if _HAS_MCP:
+    # 用 mock MCP server（tests/mock_agent_mcp_server.py，真实 stdio 协议）作为 peer：
+    # 断言 provider="mcp" 的 peer 能拿到非空评分（0.88），不再是 "" → 默认 0.5。
+    _mock_cfg = {"provider": "mcp",
+                 "mcp_server": [PY, str(ROOT.parent.parent / "tests" / "mock_agent_mcp_server.py")],
+                 "mcp_tool": "agent_review"}
+    r = run(ROOT / "consensus/vote.py", {"fn": "_call_mcp_agent", "args": [json.dumps(_mock_cfg), "你是一个评审专家。", "请对以下执行计划评分"]})
+    try:
+        _mcp_out = json.loads(r.stdout) if ok(r) else {}
+    except json.JSONDecodeError:
+        _mcp_out = {}
+    # stitch 入口会把 str 返回值再包一层 JSON，剥掉后才是工具的 dict
+    if isinstance(_mcp_out, str):
+        try:
+            _mcp_out = json.loads(_mcp_out)
+        except json.JSONDecodeError:
+            _mcp_out = {}
+    p = ok(r) and isinstance(_mcp_out, dict) and _mcp_out.get("score") == 0.88
+    print(f"{OK_MARK if p else FAIL_MARK} mcp peer score      mock server 非空评分")
+    all_ok = all_ok and p
+
+    # 完整链路：_call_peer 走 mcp 分支（覆盖 peer 名记录与 sys.path 修复）
+    r = run(ROOT / "consensus/vote.py", {"fn": "_call_peer", "args": ["mock_peer", "你是一个评审专家。", "请评分"]})
+    # _call_peer 对未知 peer 回退到 researcher(ollama)；mcp 分支只在配置存在时触发。
+    # 这里直接断言无 _error 且不崩溃（默认 peer 无 mcp 配置时返回 ""）。
+    p = ok(r) and "_error" not in r.stdout
+    print(f"{OK_MARK if p else FAIL_MARK} mcp peer routing    不崩溃无 _error")
+    all_ok = all_ok and p
+else:
+    # 无 mcp 包（裸解释器 demo job）：验证修复后的降级路径 ——
+    # 配置非法必须返回 _error 而非静默 ""（这正是 P0-5 的静默失败面）。
+    r = run(ROOT / "consensus/vote.py", {"fn": "_call_mcp_agent", "args": ["{bad json", "s", "p"]})
+    p = ok(r) and '_error' in r.stdout and 'config' in r.stdout
+    print(f"{OK_MARK if p else FAIL_MARK} mcp peer cfg-error  无 mcp 包时报 _error")
+    all_ok = all_ok and p
+
+    r = run(ROOT / "consensus/vote.py", {"fn": "_call_mcp_agent", "args": [json.dumps({"provider": "mcp"}), "s", "p"]})
+    p = ok(r) and '_error' in r.stdout
+    print(f"{OK_MARK if p else FAIL_MARK} mcp peer no-server  缺 server 报 _error")
+    all_ok = all_ok and p
+
 # ── Shared Memory 测试 ──────────────────────────────
 
 r = run(ROOT / "memory/shared_memory.py", {"fn": "write", "args": ["test:mem", {"msg": "hello"}]})

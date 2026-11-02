@@ -16,7 +16,7 @@ concurrency:
 env:
   PYTHONUNBUFFERED: "1"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  EXPECTED_PASS: "25"
+  EXPECTED_PASS: "27"
 
 jobs:
   # Job 1: the demo must pass on a bare interpreter (no third-party packages,
@@ -225,5 +225,70 @@ jobs:
             echo ""
             echo '```text'
             if [ -f sentinel-preview-output.txt ]; then cat sentinel-preview-output.txt; else echo "No output captured."; fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Job 5: MCP peer scoring must actually work (issue #15 / issue #1 P0-5).
+  # vote.py used Path without importing it and swallowed the NameError with a
+  # bare except, so provider="mcp" peers always scored "" → default 0.5.
+  # This job installs the mcp package and runs the demo with a mock MCP
+  # server: the MCP peer must return a real non-empty score.
+  mcp-peer:
+    name: mcp peer scoring (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install requirements plus mcp
+        run: |
+          set -o pipefail
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install -r requirements.txt mcp 2>&1 | tee install-output.txt
+
+      - name: Run demo with mock MCP peer
+        run: |
+          set -o pipefail
+          set +e
+          /tmp/venv/bin/python eto/stitches/test.py 2>&1 | tee demo-output.txt
+          status=$?
+          set -e
+          echo "$status" > demo-exit-code.txt
+          exit "$status"
+
+      - name: Verify exit code and PASS/FAIL counts
+        if: always()
+        run: |
+          exit_code="$(cat demo-exit-code.txt 2>/dev/null || echo 1)"
+          python3 .github/scripts/check_demo_output.py demo-output.txt \
+            --expected-pass "$EXPECTED_PASS" \
+            --exit-code "$exit_code"
+
+      - name: Assert the MCP peer check ran and passed
+        if: always()
+        run: |
+          grep -E '^PASS mcp peer score' demo-output.txt \
+            || { echo "MCP peer score check missing or failed"; exit 1; }
+
+      - name: Publish demo output to job summary
+        if: always()
+        run: |
+          {
+            echo "### mcp peer scoring (Python ${{ matrix.python-version }})"
+            echo ""
+            echo '```text'
+            if [ -f demo-output.txt ]; then cat demo-output.txt; else echo "No output captured."; fi
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,10 @@
 """ETO Stitch: 三阶段共识投票（评分→审议→终审）"""
 import io, json, os, sys, urllib.request, urllib.error
+from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
+
+import logging
+logger = logging.getLogger("eto.stitches.consensus.vote")
 
 OLLAMA_URL = "http://localhost:11434"
 MODEL = "qwen2.5-coder:7b"
@@ -97,25 +101,58 @@ def _call_claude(model: str, system: str, prompt: str) -> str:
     except: return ""
 
 def _call_mcp_agent(config_json: str, system: str, prompt: str) -> str:
-    """通过 MCP Client 调其他 Agent 的工具评分"""
+    """通过 MCP Client 调其他 Agent 的工具评分
+
+    失败分类：
+    - 可降级（server 启动失败 / 工具调用失败 / 返回空）：记录日志，返回 ""，评分退回默认 0.5
+    - 必须上报（配置非法：config_json 不是合法 JSON、缺少 mcp_server）：
+      返回 `_error` JSON，让调用方（_call_peer → _score_single → stdout）看到通道坏了
+    """
+    peer = _MCP_CURRENT_PEER  # 由 _call_peer 设置，用于日志定位
+    server_cmd = None
     try:
-        import sys as _sys
-        _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-        from eto.mcp_client import sync_call_mcp
-        cfg = json.loads(config_json)
-        cmd = cfg.get("mcp_server", [])
+        try:
+            cfg = json.loads(config_json)
+        except (json.JSONDecodeError, TypeError) as e:
+            # 必须上报：配置本身非法，不是运行环境问题
+            logger.error("mcp peer=%s config invalid: %s (%s)", peer, type(e).__name__, e)
+            return json.dumps({"_error": True, "stage": "config",
+                "peer": peer, "message": f"MCP peer 配置非法: {e}"}, ensure_ascii=False)
+        server_cmd = cfg.get("mcp_server", [])
         tool = cfg.get("mcp_tool", "agent_review")
-        if not cmd:
-            return ""
+        if not cmd_valid(server_cmd):
+            # 必须上报：配置声明了 mcp provider 却没有可用的 server 命令
+            logger.error("mcp peer=%s missing mcp_server (config=%s)", peer, config_json[:200])
+            return json.dumps({"_error": True, "stage": "config",
+                "peer": peer, "message": "MCP peer 配置缺少 mcp_server"}, ensure_ascii=False)
+
+        # vote.py 在 eto/stitches/consensus/ 下，比 mcp_dispatch.py 深一层：
+        # 需要 4 级 parent 才是仓库根（含 eto 包）。原代码只退 3 级，
+        # 即使补了 Path 导入也会 ModuleNotFoundError: No module named 'eto'。
+        sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+        from eto.mcp_client import sync_call_mcp
         args = {"system": system, "prompt": prompt}
-        result = sync_call_mcp(cmd, tool, args)
+        result = sync_call_mcp(server_cmd, tool, args)
         if result:
             return json.dumps(result, ensure_ascii=False)
-    except: pass
+        # 可降级：工具跑了但没返回内容
+        logger.warning("mcp peer=%s server=%s tool=%s returned empty", peer, server_cmd, tool)
+    except Exception as e:
+        # 可降级：server 启动失败 / 连接失败 / 工具抛错 —— 记录 peer、server_cmd、异常类型
+        logger.warning("mcp peer=%s server=%s failed: %s: %s",
+            peer, server_cmd, type(e).__name__, e)
     return ""
+
+def cmd_valid(cmd) -> bool:
+    """mcp_server 命令数组合法性：非空 list 且元素都是 str"""
+    return isinstance(cmd, list) and len(cmd) > 0 and all(isinstance(x, str) for x in cmd)
+
+_MCP_CURRENT_PEER = "(unknown)"  # _call_peer 进入时设置，供 _call_mcp_agent 日志定位
 
 def _call_peer(peer_name: str, system: str, prompt: str) -> str:
     """按 peer 配置路由到对应 provider"""
+    global _MCP_CURRENT_PEER
+    _MCP_CURRENT_PEER = peer_name
     cfg = _load_peer_config().get(peer_name, DEFAULT_PEER_CONFIG.get(peer_name, DEFAULT_PEER_CONFIG["researcher"]))
     provider = cfg.get("provider", "ollama")
     if provider == "mcp":
@@ -150,9 +187,14 @@ def _score_single(peer: str, plan: str) -> dict:
     parsed = _extract_json(raw)
     result = {"peer": peer, "score": 0.5, "concern": "", "suggestion": ""}
     if parsed:
-        result["score"] = min(max(float(parsed.get("score", 0.5)), 0), 1)
-        result["concern"] = (parsed.get("concern", "") or "")[:200]
-        result["suggestion"] = (parsed.get("suggestion", "") or "")[:200]
+        if parsed.get("_error"):
+            # provider 判定为「必须上报」的失败：带在 concern 里冒出来，不再静默退回默认分
+            result["concern"] = f"[{peer}] provider 错误: {parsed.get('message', 'unknown')}"[:200]
+            result["provider_error"] = True
+        else:
+            result["score"] = min(max(float(parsed.get("score", 0.5)), 0), 1)
+            result["concern"] = (parsed.get("concern", "") or "")[:200]
+            result["suggestion"] = (parsed.get("suggestion", "") or "")[:200]
     try:
         from eto.stitches.memory.shared_memory import write
         write(f"peer_score:{peer}", {"type": "peer_score", "peer": peer, "score": result["score"], "concern": result.get("concern", "")})
