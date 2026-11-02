@@ -276,19 +276,36 @@ def _make_node_fn(step: dict):
             sp = f"[上一步 {last.get('agent','?')}]: {out}\n\n{sp}"
 
         try:
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
             from eto.stitches.mcp_dispatch import dispatch_with_spec
-            spec = json.dumps({"server_cmd": ["python", "-m", "eto.mcp_server"], "tool": "agent_execute", "agent": step["agent"], "task": state["task"], "system_prompt": sp, "skills": skills, "mcp_tools": tools, "params": {}})
+            # 用 sys.executable 保证子进程 MCP server 用当前解释器（"python" 在
+            # 某些环境不存在，会静默变成 dispatch 空结果 → 假成功）；
+            # agent 字段显式传入，feedback 约束按 agent 名注入（issue #1 P0-6）
+            server_cmd = [sys.executable, "-m", "eto.mcp_server"]
+            spec = json.dumps({"server_cmd": server_cmd, "tool": "agent_execute", "agent": step["agent"], "task": state["task"], "system_prompt": sp, "skills": skills, "mcp_tools": tools, "params": {}})
             result = dispatch_with_spec(spec)
-            output = json.dumps(result, ensure_ascii=False)[:500] if result else ""
-            state["step_results"].append({"agent": step["agent"], "status": "ok", "output": output, "retries": 0})
+            # 假成功防线：dispatch 返回空 / _error / status=failed 都必须标 failed，
+            # 否则工作流对外报告「已完成」而每步输出为空。
+            if not result or result.get("_error"):
+                reason = (result or {}).get("message", "dispatch_with_spec 返回空结果（MCP server 未启动或工具不存在）")
+                state["step_results"].append({"agent": step["agent"], "status": "failed", "output": "", "error": str(reason), "retries": 0})
+            elif result.get("status") == "failed":
+                state["step_results"].append({"agent": step["agent"], "status": "failed", "output": result.get("output", ""), "error": result.get("reason", "agent_execute 返回 failed"), "retries": 0})
+            else:
+                output = json.dumps(result, ensure_ascii=False)[:500]
+                if not output.strip():
+                    state["step_results"].append({"agent": step["agent"], "status": "failed", "output": "", "error": "agent_execute 返回空 output", "retries": 0})
+                else:
+                    state["step_results"].append({"agent": step["agent"], "status": "ok", "output": output, "retries": 0})
 
             # 写 shared_memory — 后续步骤/其他 Agent 可读
+            last_result = state["step_results"][-1]
             try:
                 from eto.stitches.memory.shared_memory import write as _write
-                _write(f"wf_{id(state)}_{step.get('step',0)}_{step['agent']}", {"type": "workflow_step", "agent": step["agent"], "output": output, "step": step.get("step", 0), "task": state["task"]}, author="workflow")
+                _write(f"wf_{id(state)}_{step.get('step',0)}_{step['agent']}", {"type": "workflow_step", "agent": step["agent"], "output": last_result.get("output", ""), "status": last_result["status"], "step": step.get("step", 0), "task": state["task"]}, author="workflow")
             except: pass
         except Exception as e:
-            state["step_results"].append({"agent": step["agent"], "status": "failed", "output": str(e), "retries": 0})
+            state["step_results"].append({"agent": step["agent"], "status": "failed", "output": "", "error": str(e), "retries": 0})
         state["current_step"] += 1
         return state
     return node_fn
@@ -333,6 +350,9 @@ def execute_workflow(workflow_design_json: str, task: str) -> str:
     final = graph.invoke(initial)
     success = all(r["status"] == "ok" for r in final["step_results"])
 
+    # 暴露错误：失败步骤的 error 汇总到顶层，不吞掉
+    errors = [f"step {i+1} ({r['agent']}): {r.get('error', '')}" for i, r in enumerate(final["step_results"]) if r["status"] == "failed"]
+
     # 写工作流完成 summary 到 shared_memory
     try:
         from eto.stitches.memory.shared_memory import write as _write
@@ -343,7 +363,15 @@ def execute_workflow(workflow_design_json: str, task: str) -> str:
         }, author="workflow", ttl=86400)
     except: pass
 
-    return json.dumps({"step_results": final["step_results"], "success": success, "total_steps": len(final["step_results"])}, ensure_ascii=False)
+    return json.dumps({"step_results": final["step_results"], "success": success, "total_steps": len(final["step_results"]), "errors": errors}, ensure_ascii=False)
+
+def run_step(step_json: str, task: str) -> str:
+    """执行单个步骤节点（不依赖 langgraph 建图），供集成测试直接验证状态语义。"""
+    step = json.loads(step_json) if isinstance(step_json, str) else step_json
+    node = _make_node_fn(step)
+    state = WorkflowState(task=task, task_type="code", steps=[step], step_results=[], current_step=0, overall_status="running", error="")
+    node(state)
+    return json.dumps(state["step_results"][0], ensure_ascii=False)
 
 if __name__ == "__main__":
     data = json.loads(sys.stdin.read())

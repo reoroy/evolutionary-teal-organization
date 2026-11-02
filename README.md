@@ -48,7 +48,7 @@ Bootstrap 写入 Agent Profile、种子经验、**使用指南（`~/.eto/memory/
 
 ```bash
 python eto/stitches/test.py
-# 期望输出: 33 PASS（未安装 mcp 包时走降级检查）
+# 期望输出: 36 PASS（未安装 mcp 包时走降级检查）
 pip install mcp && python eto/stitches/test.py
 # 装了 mcp 包后：含 "mcp peer score" 检查 —— 用 mock MCP server
 # 验证 provider="mcp" 的 peer 能拿到非空评分
@@ -62,7 +62,7 @@ node --test tests/*.test.mjs
 
 | job | 验证内容 |
 |:----|:---------|
-| `demo` | 裸解释器（不装任何第三方包）直接跑 `eto/stitches/test.py`，断言退出码 0、PASS 数精确匹配（当前 33）、0 FAIL（Python 3.11 / 3.13 矩阵） |
+| `demo` | 裸解释器（不装任何第三方包）直接跑 `eto/stitches/test.py`，断言退出码 0、PASS 数精确匹配（当前 36）、0 FAIL（Python 3.11 / 3.13 矩阵） |
 | `clean install smoke` | 干净 venv 里 `pip install -e eto/`，检查 `eto-mesh` / `eto-bootstrap` 入口与导入，再跑一遍 demo 并同样断言 |
 | `no-langgraph degradation` | 安装去掉 langgraph 的 requirements，确认 langgraph 未安装、demo 仍全过（可选依赖降级路径的回归守卫） |
 | `sentinel preview injection` | Node 24 跑 `node --test tests/*.test.mjs`，验证安检预览不把捕获的 shell 输入喂给 shell |
@@ -444,13 +444,14 @@ Agent 不再被硬分配，而是收到任务后自评竞标：
      → vote_on_proposals() → 每个 Agent 独立评分 + 自选 prompt/skills/tools
      → 选标 → build_graph() → LangGraph StateGraph
      → execute_workflow()
-       ├── 每步调 dispatch_with_spec
+       ├── 每步调 dispatch_with_spec → mcp_server 的 agent_execute（真实执行入口）
+       ├── 空输出 / _error / status=failed → 步骤标 failed 并暴露 error（不吞掉）
        ├── 条件边（auditor 失败 → 重试）
        ├── 上一步输出注入下一步上下文
        └── 结果写 shared_memory
 ```
 
-依赖：`langgraph>=0.2.0`
+依赖：`langgraph>=0.2.0`；`agent_execute` 路由到 `~/.pi/eto-config.json` 配置的 peer provider（ollama/deepseek/claude/mcp），无可用 provider 时工作流明确报 failed。
 
 ### Fable 模式 — 复杂任务工程方法论
 
