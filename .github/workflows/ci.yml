@@ -252,8 +252,9 @@ jobs:
   # Job 5: MCP peer scoring must actually work (issue #15 / issue #1 P0-5).
   # vote.py used Path without importing it and swallowed the NameError with a
   # bare except, so provider="mcp" peers always scored "" → default 0.5.
-  # This job installs the mcp package and runs the demo with a mock MCP
-  # server: the MCP peer must return a real non-empty score.
+  # requirements.txt (since main) ships mcp, so a plain requirements install
+  # exercises the real MCP stdio path against the mock MCP server: the MCP
+  # peer must return a real non-empty score.
   mcp-peer:
     name: mcp peer scoring (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -273,11 +274,11 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install requirements plus mcp
+      - name: Install requirements (includes mcp)
         run: |
           set -o pipefail
           python3 -m venv /tmp/venv
-          /tmp/venv/bin/pip install -r requirements.txt mcp 2>&1 | tee install-output.txt
+          /tmp/venv/bin/pip install -r requirements.txt 2>&1 | tee install-output.txt
 
       - name: Run demo with mock MCP peer
         run: |
