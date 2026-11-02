@@ -170,7 +170,7 @@ try:
 except json.JSONDecodeError:
     steps = []
 descs = " ".join(s.get("description", "") for s in steps)
-p = ok(r) and len(steps) == 3 and all(k in descs for k in ("调研", "编码", "审查"))
+p = ok(r) and len(steps) == 4 and all(k in descs for k in ("调研", "编码", "审查"))
 print(f"{OK_MARK if p else FAIL_MARK} generate_steps 3步     调研+编码+审查")
 all_ok = all_ok and p
 
