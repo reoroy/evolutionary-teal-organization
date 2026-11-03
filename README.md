@@ -58,6 +58,8 @@ node --test tests/*.test.mjs
 
 `make setup`（即 `pip install -e eto/`）装完即带全部运行依赖（rich / pyyaml / mcp / langgraph），并注册 `eto-mesh`、`eto-bootstrap`、`eto-mcp-server` 三个命令。依赖声明的单一真源是 `eto/pyproject.toml`；根目录 `requirements.txt` 与其保持同步（供 `pip install -r` 场景使用），改依赖时两处一起改。
 
+> ⚠️ **依赖真实性（2026-11-03 核对）**：四个声明依赖里——`rich`（`cli.py` 表格渲染）、`mcp`（`mcp_server.py` / `mcp_client.py`）、`langgraph`（`bidding/workflow.py`，可选，缺装时降级）有实际 import；`pyyaml` 目前**没有任何代码 import**（历史遗留，配置走 JSON），保留仅为 `config.yaml.example` 的远期路径，属「声明了但未用」状态，待后续接线或移除。
+
 **CI 检查项**：push / PR 会触发 5 个 job（定义见 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)）：
 
 | job | 验证内容 |
@@ -179,7 +181,12 @@ rm -rf ~/.eto ~/.pi/etoprofiles ~/.pi/eto-config.json
 
 ## 功能
 
-### 三镜路由 — 任务自动分类
+> **实现状态标注（2026-11-03，主干 f6f4883）**：本节每项能力按实际代码标注状态——
+> ✅ 可用（代码存在且有验证） / 🟡 部分（核心在、有明确缺口） / ⬜ 缺失（代码里没有） / 🔶 仅占位（有形无实）。
+> 缺失项的验证命令：`grep -rn "恒纪元\|乱纪元" eto/`、`grep -rniE "permit|budget" eto/ --include=*.py`、`grep -rn "collective_reflection" eto/` 均无结果。
+> 详细缺口对照见 [`docs/implementation-roadmap.md`](docs/implementation-roadmap.md)。
+
+### 三镜路由 — 任务自动分类 ✅
 
 你说一句话，ETO 自动判断任务类型：
 
@@ -191,7 +198,11 @@ rm -rf ~/.eto ~/.pi/etoprofiles ~/.pi/eto-config.json
 
 路由后端可配置 LLM 语义路由或关键词降级（`~/.pi/eto-config.json`）。
 
-### 同侪共识 — 三阶段评审
+> ⚠️ **路由未实现的部分**（设计文档 `docs/requirements.md` FR-A2.3/A2.4/A3 声称过）：
+> - **三体权重与 MODE（research/build/debate/full/direct）** — ⬜ 缺失。`RouteResult` 只有 `gewu/route/confidence/coordinator/layer` 五个字段，没有三体权重向量，也没有 MODE 映射（`grep -rn "恒纪元\|乱纪元" eto/` 无结果）。跟踪 issue：#26。
+> - **置信度学习** — ⬜ 缺失。路由置信度只作为 metric 展示（`eto.ts` :774 起），从不回读修正路由权重（FR-A2.4）。跟踪 issue：#30。
+
+### 同侪共识 — 三阶段评审 ✅
 
 风险操作由三个 AI peer 独立评分、审议、终审：
 
@@ -212,7 +223,9 @@ echo '{"fn":"peer_review","args":["部署到生产环境不备份不测试",["re
 | T2 审议 | 分歧 > 0.2 时 peer 看到他人意见后重新评分 |
 | T3 终审 | 审议后分歧仍大 → auditor 终审裁决 |
 
-### 多模型 — 各 peer 用不同 LLM
+> ⚠️ 共识本身可用（CI mcp-peer 检查覆盖真实 MCP peer 评分路径），但设计文档里的**权限绑定与任务预算**（`docs/requirements.md` FR-D3：`permit --role=礼部 --allow=web_search`、`budget --cap=$0.05`）—— ⬜ 缺失，`grep -rniE "permit|budget" eto/ --include=*.py` 无结果。跟踪 issue：#27。
+
+### 多模型 — 各 peer 用不同 LLM ✅
 
 每个 peer 可独立配置 provider：
 
@@ -234,7 +247,7 @@ echo '{"fn":"peer_review","args":["部署到生产环境不备份不测试",["re
 | `deepseek` | 环境变量 `DEEPSEEK_API_KEY` |
 | `claude` | 环境变量 `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`（经 Hermes 代理） |
 
-### 智子安检 v2 — AgentGuard 级行为规则引擎
+### 智子安检 v2 — AgentGuard 级行为规则引擎 ✅
 
 可配置规则引擎，拦截危险操作。支持四种规则类型 + 逃生门防循环。
 
@@ -346,7 +359,7 @@ echo '{"fn":"peer_review","args":["部署到生产环境不备份不测试",["re
 
 ---
 
-## ETO Mesh — Agent 协作网络
+## ETO Mesh — Agent 协作网络 ✅
 
 Agent Registry + 跨平台 CLI + 可配置调度 + 竞标协议 + LangGraph 工作流，让多个 Agent 互相发现、协商和协作。
 
@@ -433,7 +446,7 @@ Agent 不再被硬分配，而是收到任务后自评竞标：
                                                            关键词匹配 (fallback)
 ```
 
-见 [`docs/teal-runtime-arch.md`](docs/teal-runtime-arch.md)。
+见 [`docs/teal-runtime-arch.md`](docs/teal-runtime-arch.md)。竞标无人应标时降级关键词匹配（`bidding/protocol.py` 的 fallback 路径），有 CI 检查覆盖。
 
 ### LangGraph 工作流 (Phase B)
 
@@ -453,7 +466,9 @@ Agent 不再被硬分配，而是收到任务后自评竞标：
 
 依赖：`langgraph>=0.2.0`；`agent_execute` 路由到 `~/.pi/eto-config.json` 配置的 peer provider（ollama/deepseek/claude/mcp），无可用 provider 时工作流明确报 failed。
 
-### Fable 模式 — 复杂任务工程方法论
+> ⚠️ 工作流仅覆盖「任务拆步执行」这一种拓扑。设计文档里的四种 Loop（Rework / Iteration / Watch / Cron，`docs/eto-feature-list.md` ETO-060~063）—— ⬜ 缺失，代码里没有 LoopContext 或任何循环意图检测（`grep -rn "collective_reflection\|Rework\|Watch Loop" eto/` 无结果）。跟踪 issue：#28。
+
+### Fable 模式 — 复杂任务工程方法论 ✅
 
 编码任务（含重构/架构/迁移/优化/安全等关键词）自动从 [`docs/fable-mode.md`](docs/fable-mode.md) 加载 Fable 工程方法论注入到 Agent 提示词中：
 
@@ -465,7 +480,7 @@ Agent 不再被硬分配，而是收到任务后自评竞标：
 
 来源：[PH5h5W6d2L/fable-mode](https://github.com/PH5h5W6d2L/fable-mode)，项目自带 `docs/fable-mode.md`，全局 `~/.claude/commands/fable-mode.md` 覆盖。
 
-### 时间注入
+### 时间注入 ✅
 
 ETO 在每次路由时从系统时钟读取北京时间并注入 prompt，让 Agent 感知真实时间：
 
@@ -475,7 +490,7 @@ ETO 在每次路由时从系统时钟读取北京时间并注入 prompt，让 Ag
 
 路由输出中自动包含时间戳，适用于需要时间感知的任务（日志审计、定时操作、排期计划等）。
 
-### HITL 认知质量层 — 三 Gate 人在回路
+### HITL 认知质量层 — 三 Gate 人在回路 ✅
 
 纯规则引擎（零 LLM 调用），在关键节点强制人类参与，提升指令和输出质量：
 
@@ -499,7 +514,7 @@ Clarify Gate 已在 Pi 的路由中默认启用。Review / Feedback Gate 通过 
 
 Feedback 约束按 **agent 名**读写：`dispatch_spec` 构造时显式携带 `agent` 字段（`eto.ts` / `bidding/workflow.py`），`inject_constraints` 据此匹配——不再从 tool 名反推。spec 缺 `agent` 字段时跳过注入并在 stderr 留下 `constraints_skipped` 记录，不静默。
 
-### context_block → agentmemory
+### context_block → agentmemory ✅
 
 每次执行前注入的 TealContext 优先从 agentmemory MCP 拉数据（跨 Agent 中央记忆），不可用时降级本地文件：
 
@@ -511,7 +526,7 @@ context_block(n=5)
 
 ---
 
-## 多 Agent 集成（MCP + Shared Memory）
+## 多 Agent 集成（MCP + Shared Memory） ✅
 
 ETO **同时是 MCP Server 和 MCP Client**，双向接入 Agent 生态，并内置共享记忆系统。
 
@@ -650,25 +665,31 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
          agentmemory ←── context_block ──── agentmemory
 ```
 
-| 组件 | 位置 | 做的事 |
-|:-----|:------|:-------|
-| 路由 + 安检 v2 + 入口 | `extensions/eto.ts` | Pi Extension，~820 行 |
-| 共识 | `stitches/consensus/vote.py` | 三阶段评分→审议→终审 |
-| 选举 | `stitches/election/elect.py` | 匹配度×空闲率推举/竞标选标 |
-| 执行 | `stitches/comms/a2a.py` | 多步任务+上下文传递 |
-| MCP Server | `mcp_server.py` | FastMCP，暴露 ETO 工具 |
-| MCP Client | `mcp_client.py` | 调其他 Agent 的 MCP 工具 |
-| Agent Registry | `extensions/eto.ts` | 注册表 + 心跳 + `/agents` |
-| Mesh CLI | `cli.py` | `eto-mesh join/status` |
-| dispatch_spec | `stitches/mcp_dispatch.py` | `dispatch_with_spec()` |
-| 竞标协议 | `stitches/bidding/protocol.py` | `run_bidding()` (Phase A) |
-| 共享记忆 | `stitches/memory/shared_memory.py` | KV + agentmemory context_block |
+| 组件 | 位置 | 做的事 | 状态 |
+|:-----|:------|:-------|:-----|
+| 路由 + 安检 v2 + 入口 | `extensions/eto.ts` | Pi Extension，~919 行 | ✅ |
+| 共识 | `stitches/consensus/vote.py` | 三阶段评分→审议→终审 | ✅ |
+| 选举 | `stitches/election/elect.py` | 匹配度×随机因子推举/竞标选标 | 🔶 仅占位（无 Raft term/quorum/持久化，见 #29） |
+| 执行 | `stitches/comms/a2a.py` | 多步任务+上下文传递 | ✅ |
+| MCP Server | `mcp_server.py` | FastMCP，暴露 ETO 工具 | ✅ |
+| MCP Client | `mcp_client.py` | 调其他 Agent 的 MCP 工具 | ✅ |
+| Agent Registry | `extensions/eto.ts` | 注册表 + 心跳 + `/agents` | ✅ |
+| Mesh CLI | `cli.py` | `eto-mesh join/status` | ✅ |
+| dispatch_spec | `stitches/mcp_dispatch.py` | `dispatch_with_spec()` | ✅ |
+| 竞标协议 | `stitches/bidding/protocol.py` | `run_bidding()` (Phase A) | ✅ |
+| 共享记忆 | `stitches/memory/shared_memory.py` | KV + agentmemory context_block | ✅ |
+| 三体权重 / MODE 路由 | — | 设计见 requirements FR-A2.3/A3 | ⬜ 缺失（#26） |
+| 置信度学习 | — | 设计见 requirements FR-A2.4 | ⬜ 缺失（#30） |
+| 权限绑定与任务预算 | — | 设计见 requirements FR-D3 | ⬜ 缺失（#27） |
+| 集体回顾 / 四种 Loop | — | 设计见 requirements FR-E1/E2 | ⬜ 缺失（#28） |
 
 ### 原则
 
 - **Pi 有的不写** — TUI、工具调用、会话管理、provider 抽象直接用 Pi 的
 - **编排层 < 1000 行** — 超过说明在造轮子
 - **每个 Agent 是平等 peer** — 不降级、不设固定层级
+
+> ⚠️ **现实**：当前 Python 侧（`eto/`，不含测试）约 2,200 行 + TS 扩展 919 行，已超出「编排层 < 1000 行」的自我约束；其中共识、选举、竞标、记忆均为**自实现，未接入** Roadmap Phase 1/2 点名的 protolink / nexus / aegean / gravity / skillspector（这些依赖也未出现在 `requirements.txt` / `eto/pyproject.toml`）。
 
 ---
 
@@ -689,13 +710,13 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
 
 ETO 使用了以下开源项目：
 
-| 项目 | 用途 | 协议 |
-|:-----|:------|:------|
-| [LangGraph](https://github.com/langchain-ai/langgraph) | 多 Agent 工作流图编排 | MIT |
-| [Fable Mode](https://github.com/PH5h5W6d2L/fable-mode) | 复杂任务工程方法论注入 | MIT |
-| [Pi CLI](https://github.com/earendil-works/pi-coding-agent) | Agent 运行时引擎 | MIT |
-| [Rich](https://github.com/Textualize/rich) | 终端表格渲染（eto-mesh status） | MIT |
-| [ProtoLink](https://github.com/jtemporal/protollm) | Agent 间通信 | Apache 2.0 |
+| 项目 | 用途 | 协议 | 实际接入状态 |
+|:-----|:------|:------|:-------------|
+| [LangGraph](https://github.com/langchain-ai/langgraph) | 多 Agent 工作流图编排 | MIT | ✅ 已接入（`bidding/workflow.py`） |
+| [Fable Mode](https://github.com/PH5h5W6d2L/fable-mode) | 复杂任务工程方法论注入 | MIT | ✅ 已接入（`docs/fable-mode.md`） |
+| [Pi CLI](https://github.com/earendil-works/pi-coding-agent) | Agent 运行时引擎 | MIT | ✅ 已接入（`extensions/eto.ts`） |
+| [Rich](https://github.com/Textualize/rich) | 终端表格渲染（eto-mesh status） | MIT | ✅ 已接入（`cli.py`） |
+| [ProtoLink](https://github.com/jtemporal/protollm) | Agent 间通信 | Apache 2.0 | ❌ 未接入——Agent 间通信为自实现（`mcp_client.py` / `stitches/comms`），代码里无 protolink import，依赖也未声明 |
 
 ---
 
