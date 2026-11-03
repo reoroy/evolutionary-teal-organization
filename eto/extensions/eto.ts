@@ -11,6 +11,12 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { buildPreviewPlan, compileRulePattern, executePreviewPlan } from "./sentinel-preview.mjs";
 import { adjustConfidence, buildModeDispatch, formatWeights, normalizeWeights, routeWithMode, type Era, type Mode, type ModeDispatch, type ThreeBodyWeights } from "./mode-routing.mjs";
+import {
+  DEFAULT_LEARNING_CONFIG, adjustCoordinatorCandidates, appendOutcome, appendPrediction,
+  formatAdjustments, loadRoutingHistory, normalizeLearningConfig, resetRoutingHistory,
+  selectModeWithLearning, summarizeAll, summarizeHistory,
+  type HistorySummary, type LearningAdjustment, type LearningConfig,
+} from "./confidence-learning.mjs";
 
 // ═══════════════════════════════════════════════════
 //  Agent Profile + Skills + Metrics
@@ -109,6 +115,47 @@ function writeMetric(route: string, agent: string, success: boolean, steps = 0, 
   } catch {}
 }
 
+// ═══════════════════════════════════════════════════
+//  Confidence Learning — 路由历史回读（FR-A2.4）
+// ═══════════════════════════════════════════════════
+
+const ROUTING_HISTORY_PATH = () => join(require("os").homedir(), ".eto", "memory", "routing-history.jsonl");
+
+/** 学习配置：~/.pi/eto-config.json 的 router.learning 段，缺省保守（enabled + 5 样本起步） */
+function loadLearningConfig(): LearningConfig {
+  try {
+    const cfgPath = join(require("os").homedir(), ".pi", "eto-config.json");
+    if (!existsSync(cfgPath)) return DEFAULT_LEARNING_CONFIG;
+    const raw = JSON.parse(readFileSync(cfgPath, "utf-8"));
+    return normalizeLearningConfig(raw?.router?.learning);
+  } catch { return DEFAULT_LEARNING_CONFIG; }
+}
+
+/** 回读当前任务（同 gewu）的历史统计；无历史文件或禁用 → 空统计 */
+function loadLearningStats(gewu: string): { summary: HistorySummary; enabled: boolean } {
+  const config = loadLearningConfig();
+  const summary = summarizeHistory(loadRoutingHistory(ROUTING_HISTORY_PATH()), gewu);
+  return { summary, enabled: config.enabled };
+}
+
+/** 追加预测记录；失败静默（学习不得阻塞路由） */
+function recordPrediction(task: string, route: { gewu: string; route: string; mode: Mode; weights: ThreeBodyWeights; confidence: number; coordinator: string; peers?: string[] }): string | null {
+  try {
+    const rec = appendPrediction(ROUTING_HISTORY_PATH(), {
+      task, gewu: route.gewu, route: route.route, mode: route.mode,
+      weights: route.weights, confidence: route.confidence, coordinator: route.coordinator,
+      peers: route.peers ?? [],
+    });
+    return rec.id;
+  } catch { return null; }
+}
+
+/** 补记最终结果；失败静默 */
+function recordOutcome(id: string | null, outcome: "success" | "failure", reason: string): void {
+  if (!id) return;
+  try { appendOutcome(ROUTING_HISTORY_PATH(), id, outcome, reason); } catch {}
+}
+
 const AGENT_PROMPT = [
   `Communication:`,
   `- Lead with the verdict, then the evidence.`,
@@ -194,6 +241,8 @@ interface RouteResult extends BaseRoute {
   era: Era;
   mode: Mode;
   dispatch: ModeDispatch;
+  /** FR-A2.4：本次路由的置信度学习调整依据（每次调整一行人话，可解释） */
+  learning: string[];
 }
 
 const GEWU_MAP: Record<string, string> = {
@@ -274,24 +323,25 @@ async function routeTask(task: string): Promise<RouteResult> {
   return finalizeRoute(task, base);
 }
 
-/** FR-A3.4：置信度随历史执行结果调整 */
-function loadRouteHistory(gewu: string): { samples: number; successRate: number } {
-  try {
-    const p = join(require("os").homedir(), ".eto", "memory", "metrics.jsonl");
-    if (!existsSync(p)) return { samples: 0, successRate: 0 };
-    const rows = readFileSync(p, "utf-8").split("\n").filter(Boolean)
-      .map(l => { try { return JSON.parse(l); } catch { return null; } })
-      .filter((r: any) => r && r.route === gewu && typeof r.success === "boolean") as any[];
-    if (rows.length === 0) return { samples: 0, successRate: 0 };
-    return { samples: rows.length, successRate: rows.filter(r => r.success).length / rows.length };
-  } catch { return { samples: 0, successRate: 0 }; }
-}
-
-/** 补全 RouteResult 的三体权重 / 纪元 / MODE / 派发计划（FR-A2.3 + FR-A3.1–A3.3） */
+/** FR-A3.4 + FR-A2.4：补全权重/纪元/MODE/派发，并回读历史修正路由 */
 function finalizeRoute(task: string, base: BaseRoute): RouteResult {
   const routed = routeWithMode(task, base.route, base.weights);
-  const confidence = adjustConfidence(base.confidence, loadRouteHistory(base.gewu));
-  return { ...base, confidence, weights: routed.weights, era: routed.era, mode: routed.mode, dispatch: buildModeDispatch(routed) };
+  const { summary, enabled } = loadLearningStats(base.gewu);
+
+  // FR-A2.4 MODE 降权：同类任务（同 gewu）历史准确率低的 MODE 顺位下移
+  let mode = routed.mode;
+  const learningLines: string[] = [];
+  if (enabled && base.route === "plan") {
+    const learned = selectModeWithLearning(routed.weights, base.route, summary.modeStats, loadLearningConfig());
+    if (learned.mode !== routed.mode) {
+      mode = learned.mode as Mode;
+    }
+    learningLines.push(...formatAdjustments(learned.adjustments));
+  }
+
+  const dispatch = buildModeDispatch({ ...routed, mode });
+  const confidence = adjustConfidence(base.confidence, summary.overall);
+  return { ...base, confidence, weights: routed.weights, era: routed.era, mode, dispatch, learning: learningLines };
 }
 
 // ═══════════════════════════════════════════════════
@@ -653,8 +703,11 @@ async function execPlan(task: string, route: RouteResult): Promise<string> {
 
   // FR-A3.1 + FR-C1.2：候选分数来自 profiles.json 的 match_score × (1 - busy_ratio)，
   // busy_ratio 为 ~/.eto/busy.json 的真实负载；MODE 的 coordinatorHint 参与加权
+  // FR-A2.4：候选分再乘历史准确率折扣（低准确率 peer 降权，下限 maxPeerDownweight）
   const hint = route.dispatch.coordinatorHint;
-  const candidates = buildElectionCandidates(route.gewu, hint);
+  const raftCandidates = buildElectionCandidates(route.gewu, hint);
+  const learning = loadLearningStats(route.gewu);
+  const candidates = adjustCoordinatorCandidates(raftCandidates, learning.summary.peerStats, loadLearningConfig());
   let coordinator = await electCoordinator(candidates);
   if (coordinator === null) {
     // quorum 未达成（全员满载等）→ 回退路由层 coordinator
@@ -838,6 +891,40 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("routing-history", {
+    description: "显示路由历史与学习统计（FR-A2.4 置信度学习）",
+    handler: async (_args, ctx) => {
+      const records = loadRoutingHistory(ROUTING_HISTORY_PATH());
+      if (records.length === 0) {
+        ctx.ui.notify("📉 路由历史为空（首次使用或已清空）。执行任务后自动累积。", "info");
+        return;
+      }
+      const { byGewu, overall } = summarizeAll(records);
+      const config = loadLearningConfig();
+      const lines = [`📉 路由学习历史（${overall.samples} 次已判定 / 共 ${records.length} 条记录）`];
+      lines.push(`总成功率: ${(overall.successRate * 100).toFixed(0)}%`);
+      for (const [gewu, s] of Object.entries(byGewu)) {
+        lines.push(`${gewu}: ${s.overall.samples} 次，成功率 ${(s.overall.successRate * 100).toFixed(0)}%`);
+        for (const [mode, m] of Object.entries(s.modeStats)) {
+          lines.push(`  MODE ${mode}: ${m.samples} 次成功率 ${(m.successRate * 100).toFixed(0)}%${m.samples >= config.minSamples && m.successRate < config.lowSuccessThreshold ? " ← 将被降权" : ""}`);
+        }
+        for (const [peer, p] of Object.entries(s.peerStats)) {
+          lines.push(`  peer ${peer}: ${p.samples} 次成功率 ${(p.successRate * 100).toFixed(0)}%`);
+        }
+      }
+      lines.push(`判据与清空方法见 README「置信度学习」节；历史文件: ~/.eto/memory/routing-history.jsonl`);
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  pi.registerCommand("routing-reset", {
+    description: "清空路由学习历史（可回滚：学习从零开始）",
+    handler: async (_args, ctx) => {
+      const { existed } = resetRoutingHistory(ROUTING_HISTORY_PATH());
+      ctx.ui.notify(existed ? "🧹 路由学习历史已清空，下次路由从零开始" : "路由学习历史本就不存在，无需清空", "info");
+    },
+  });
+
   pi.registerCommand("agents", {
     description: "列出所有已注册 Agent 及其状态",
     handler: async (_args, ctx) => {
@@ -898,10 +985,14 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify("📋 ETO 分析中...", "info");
     const route = await routeTask(task);
 
+    // FR-A2.4：记录本次路由预测（含学习调整后的 MODE），id 供最终结果回填
+    const predId = recordPrediction(task, route);
+
     const confidence = (route.confidence * 100).toFixed(0);
     ctx.ui.notify(`🔍 三镜路由: ${route.gewu} → ${route.route}  [${route.layer} ${confidence}%]`, "info");
     ctx.ui.notify(`⚖️ 三体: ${formatWeights(route.weights)} | ${route.era === "chaotic" ? "乱纪元" : "恒纪元"}`, "info");
     ctx.ui.notify(`🎯 MODE: ${route.mode} → dispatch: ${route.dispatch.path}`, "info");
+    for (const line of route.learning) ctx.ui.notify(`📉 学习: ${line}`, "info");
     ctx.ui.notify(`👤 协调员: ${route.coordinator}`, "info");
 
     const tz = process.env.ETO_TIMEZONE || "Asia/Shanghai";
@@ -919,6 +1010,10 @@ export default function (pi: ExtensionAPI) {
       `MODE: ${route.mode} | dispatch: ${route.dispatch.path} | 审核深度: ${route.dispatch.reviewDepth} | REWORK 上限: ${route.dispatch.reworkRounds} 轮`,
       `协调员: ${route.coordinator}`,
     ];
+    if (route.learning.length > 0) {
+      routeLines.push(`学习调整（依据 ~/.eto/memory/routing-history.jsonl 同类任务历史）:`);
+      routeLines.push(...route.learning.map(l => `- ${l}`));
+    }
 
     if (route.route === "plan") {
       // 0. Clarify Gate — 模糊指令拦截
@@ -933,13 +1028,17 @@ export default function (pi: ExtensionAPI) {
         widgetLines.push(`💡 指令待澄清`);
         ctx.ui.setWidget("eto-route", widgetLines);
         writeMetric(route.route, "clarify", false, 0);
+        recordOutcome(predId, "failure", "clarify-gate-rejected"); // FR-A2.4：模糊指令被拦截 → 预测错误
         return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
       }
 
       // 1. 先选协调员（Raft）—— 候选分数来自 profiles.json + 真实 busy_ratio（FR-C1.2）
+      //    FR-A2.4：候选分再乘历史准确率折扣（低准确率 peer 降权，下限 maxPeerDownweight）
       ctx.ui.notify(`🗳️ 选举协调员...`, "info");
       const hint = route.dispatch.coordinatorHint;
-      const candidates_ = buildElectionCandidates(route.gewu, hint);
+      const raftCandidates_ = buildElectionCandidates(route.gewu, hint);
+      const learning_ = loadLearningStats(route.gewu);
+      const candidates_ = adjustCoordinatorCandidates(raftCandidates_, learning_.summary.peerStats, loadLearningConfig());
       let coordinator = await electCoordinator(candidates_);
       if (coordinator === null) {
         // quorum 未达成 → 回退路由层 coordinator
@@ -978,6 +1077,7 @@ export default function (pi: ExtensionAPI) {
         for (const err of ((exec?.errors || []) as string[])) routeLines.push(`  !! ${err.slice(0, 200)}`);
         widgetLines.push(wfOk ? `🔄 ${(wfResult as any).workflow || "workflow"} (${exec?.total_steps || 0} 步)` : `⚠️ ${(wfResult as any).workflow || "workflow"} 失败 (${(exec?.errors || []).length} 项错误)`);
         ctx.ui.setWidget("eto-route", widgetLines);
+        recordOutcome(predId, wfOk ? "success" : "failure", `workflow:${(exec?.step_results || []).filter((r: any) => r.status === "failed").length} 步失败`);
         return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
       }
 
@@ -1024,6 +1124,9 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setWidget("eto-route", widgetLines);
 
       writeMetric(route.route, agentNames, true, parseInt(stepMatch?.[1] || "0"));
+      // FR-A2.4：降级路径以共识终审为结果判据（通过=预测正确）
+      const fallbackOk = (consensusMatch?.[1] || "通过").includes("通过") || (consensusMatch?.[1] || "通过").includes("approved");
+      recordOutcome(predId, fallbackOk ? "success" : "failure", `fallback-consensus:${consensusMatch?.[1] || "通过"}`);
       return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
     }
 
@@ -1042,8 +1145,10 @@ export default function (pi: ExtensionAPI) {
       widgetLines.push(`🤝 ${status === "approved" ? "通过" : "需修正"} ${(score * 100).toFixed(0)}%`);
       ctx.ui.setWidget("eto-route", widgetLines);
       writeMetric(route.route, "consensus", status === "approved", 1);
+      recordOutcome(predId, status === "approved" ? "success" : "failure", `consensus:${status}`); // FR-A2.4：终审判据
     } else {
-      // MODE=direct：单次回答
+      // MODE=direct：单次回答（无失败信号，保守记正确；direct 不参与 MODE 降权）
+      recordOutcome(predId, "success", "direct:no-failure-signal");
       routeLines.push(`回复格式：`);
       routeLines.push(`【路由】一句话说明任务归类 (MODE=${route.mode})`);
       routeLines.push("【回答】你的回答");
