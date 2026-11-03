@@ -43,6 +43,74 @@ p = ok(r) and '"researcher"' in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} elect empty         leader=researcher")
 all_ok = all_ok and p
 
+# ── Raft 语义测试（issue #29: term/quorum/持久化/busy_ratio）──────────────
+# 每次 run() 都是新进程，持久化只能靠状态文件，正好验证跨进程存活。
+# ETO_ELECTION_STATE 指向临时文件，不污染 ~/.eto。
+
+import tempfile as _tf
+with _tf.NamedTemporaryFile(suffix=".json", delete=False) as _f:
+    _ELEC_STATE = _f.name
+os.environ["ETO_ELECTION_STATE"] = _ELEC_STATE
+
+def _run_elect(cands):
+    return run(ROOT / "election/elect.py", {"fn": "elect", "args": [cands]})
+
+# 1) 持久化: 两次独立进程调用，第二次应复用同一 leader（raft-incumbent，term 不变）
+r1 = _run_elect([["r", 0.9], ["c", 0.5]])
+r2 = _run_elect([["r", 0.9], ["c", 0.5]])
+try:
+    _e1, _e2 = json.loads(r1.stdout), json.loads(r2.stdout)
+except json.JSONDecodeError:
+    _e1, _e2 = {}, {}
+p = (
+    ok(r1) and ok(r2)
+    and _e1.get("method") == "raft" and _e1.get("term") == 1
+    and _e2.get("method") == "raft-incumbent" and _e2.get("term") == 1
+    and _e1.get("leader") == _e2.get("leader") == "r"
+)
+print(f"{OK_MARK if p else FAIL_MARK} elect persist       跨进程同一leader/term")
+all_ok = all_ok and p
+
+# 2) quorum 不足: 全员 busy_ratio=1 → 有效得分全为 0 → 不产生 leader
+r = _run_elect([{"name": "r", "score": 0.9, "busy_ratio": 1.0},
+                {"name": "c", "score": 0.5, "busy_ratio": 1.0}])
+try:
+    _e = json.loads(r.stdout)
+except json.JSONDecodeError:
+    _e = {}
+p = ok(r) and _e.get("leader") is None and _e.get("method") == "raft-no-quorum"
+print(f"{OK_MARK if p else FAIL_MARK} elect no-quorum     全忙无leader")
+all_ok = all_ok and p
+
+# 3) busy_ratio 真实生效: r 得分高但满载 → c 当选（match_score × (1-busy_ratio)）
+r = _run_elect([{"name": "r", "score": 0.9, "busy_ratio": 1.0},
+                {"name": "c", "score": 0.5, "busy_ratio": 0.0}])
+try:
+    _e = json.loads(r.stdout)
+except json.JSONDecodeError:
+    _e = {}
+p = ok(r) and _e.get("leader") == "c" and _e.get("term") == 3
+print(f"{OK_MARK if p else FAIL_MARK} elect busy_ratio    满载让位")
+all_ok = all_ok and p
+
+# 4) 源码断言: elect.py 实现 term/quorum/持久化/busy_ratio 四要素（防退化）
+_elec_src = (ROOT / "election" / "elect.py").read_text(encoding="utf-8")
+p = all(k in _elec_src for k in ("term", "quorum", "election-state.json", "busy_ratio", "1.0 - c[\"busy_ratio\"]"))
+print(f"{OK_MARK if p else FAIL_MARK} elect raft-semantics 源码四要素")
+all_ok = all_ok and p
+
+# 5) 源码断言: eto.ts 候选分数来自 profiles.json（非硬编码）
+_ts_src = (ROOT.parent / "extensions" / "eto.ts").read_text(encoding="utf-8")
+import re as _re
+_hardcoded = _re.search(r'candidates\w*\s*:\s*\[string,\s*number\]\[\]\s*=\s*\[', _ts_src)
+p = ("buildElectionCandidates" in _ts_src and not _hardcoded
+     and "weights" in _ts_src and "busyRatioFor" in _ts_src)
+print(f"{OK_MARK if p else FAIL_MARK} elect cand非硬编码  profiles+busy")
+all_ok = all_ok and p
+
+os.environ.pop("ETO_ELECTION_STATE", None)
+os.unlink(_ELEC_STATE)
+
 # 空 peers → avg_score=0.6
 r = run(ROOT / "consensus/vote.py", {"fn": "peer_review", "args": ["plan", []]})
 p = ok(r) and '0.6' in r.stdout
@@ -256,7 +324,7 @@ p = bool(m_exec) and bool(m_disp) and all(
         "tryDispatchToMCPAgent(coordinator, contextTask)",
         "peerConsensus(contextTask,",
         "executePlanViaMaestro(contextTask, steps)",
-        "dispatchByMode(task, route, contextTask)",
+        "dispatchByMode(task, route, contextTask, coordinator)",
     )
 ) and "tryDispatchToMCPAgent(coordinator, task)" not in combined
 print(f"{OK_MARK if p else FAIL_MARK} ctx dispatch         execPlan用contextTask")
