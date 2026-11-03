@@ -243,18 +243,22 @@ with tempfile.TemporaryDirectory() as tmp_home:
     print(f"{OK_MARK if p else FAIL_MARK} ctx priority         mempalace非空→优先")
     all_ok = all_ok and p
 
-# 注入真的进了 dispatch：eto.ts execPlan 必须把 contextTask 传给
-# tryDispatchToMCPAgent / executePlanViaMaestro / peerConsensus（源码断言，防回归）。
+# 注入真的进了 dispatch：eto.ts 的 execPlan + dispatchByMode 必须把 contextTask
+# 传给 tryDispatchToMCPAgent / executePlanViaMaestro / peerConsensus（源码断言，防回归）。
+# MODE 路由（issue #26）把流水线调用移进 dispatchByMode，故断言两者拼接后的整体。
 ts_src = (ROOT.parent / "extensions" / "eto.ts").read_text(encoding="utf-8")
-m = re.search(r"async function execPlan\(task: string[^{]*\{(.*?)\n\}", ts_src, re.DOTALL)
-p = bool(m) and all(
-    call in m.group(1)
+m_exec = re.search(r"async function execPlan\(task: string[^{]*\{(.*?)\n\}", ts_src, re.DOTALL)
+m_disp = re.search(r"async function dispatchByMode\(task: string[^{]*\{(.*?)\n\}", ts_src, re.DOTALL)
+combined = (m_exec.group(1) if m_exec else "") + (m_disp.group(1) if m_disp else "")
+p = bool(m_exec) and bool(m_disp) and all(
+    call in combined
     for call in (
         "tryDispatchToMCPAgent(coordinator, contextTask)",
         "peerConsensus(contextTask,",
         "executePlanViaMaestro(contextTask, steps)",
+        "dispatchByMode(task, route, contextTask)",
     )
-) and "tryDispatchToMCPAgent(coordinator, task)" not in m.group(1)
+) and "tryDispatchToMCPAgent(coordinator, task)" not in combined
 print(f"{OK_MARK if p else FAIL_MARK} ctx dispatch         execPlan用contextTask")
 all_ok = all_ok and p
 

@@ -10,6 +10,7 @@ import { join } from "path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { buildPreviewPlan, compileRulePattern, executePreviewPlan } from "./sentinel-preview.mjs";
+import { adjustConfidence, buildModeDispatch, formatWeights, normalizeWeights, routeWithMode, type Era, type Mode, type ModeDispatch, type ThreeBodyWeights } from "./mode-routing.mjs";
 
 // ═══════════════════════════════════════════════════
 //  Agent Profile + Skills + Metrics
@@ -62,6 +63,8 @@ function synthesizeSummary(task: string, route: RouteResult, agents: AgentProfil
     ``,
     `目标: ${task}`,
     `路由: ${route.gewu} → ${route.route} (${route.layer} ${(route.confidence * 100).toFixed(0)}%)`,
+    `三体: ${formatWeights(route.weights)} | 纪元: ${route.era === "chaotic" ? "乱纪元" : "恒纪元"}`,
+    `MODE: ${route.mode} (dispatch: ${route.dispatch.path}, 审核深度: ${route.dispatch.reviewDepth})`,
     `协调员: ${route.coordinator}`,
     `执行 Agent: ${agents.map(a => a.label).join("、")}`,
   ].join("\n");
@@ -179,9 +182,18 @@ function decomposePrompt(agents: AgentProfile[]): string {
 // ═══════════════════════════════════════════════════
 
 type Route = "direct" | "plan" | "consensus";
-interface RouteResult {
+/** 路由层产出（weights 可选：LLM 给了就有，否则 finalizeRoute 关键词推断） */
+interface BaseRoute {
   gewu: string; route: Route; confidence: number;
   coordinator: string; layer: string;
+  weights?: unknown;
+}
+/** FR-A2.3 / FR-A3：补全三体权重 + 纪元 + MODE + 派发计划后的路由结果 */
+interface RouteResult extends BaseRoute {
+  weights: ThreeBodyWeights;
+  era: Era;
+  mode: Mode;
+  dispatch: ModeDispatch;
 }
 
 const GEWU_MAP: Record<string, string> = {
@@ -205,7 +217,7 @@ function parseRouteJSON(text: string): Record<string, unknown> | null {
   try { return JSON.parse(jsonStr.slice(start, end + 1)); } catch { return null; }
 }
 
-async function llmRoute(task: string): Promise<RouteResult | null> {
+async function llmRoute(task: string): Promise<BaseRoute | null> {
   try {
     const resp = await fetch("http://localhost:11434/api/generate", {
       method: "POST",
@@ -232,15 +244,17 @@ Task: ${task}`,
     const route = ROUTE_MAP[String(parsed.ROUTE ?? "").toLowerCase()];
     const confidence = Math.min(Math.max(parsed.confidence ?? 0.5, 0), 1);
     if (!route) return null;
+    // FR-A2.3：LLM 可输出三体权重 {"li":0.5,"shi":0.3,"de":0.2}，非法则降级关键词推断
+    const llmWeights = normalizeWeights(parsed.weights);
     return {
-      gewu: gewu || "code", route, confidence,
+      gewu: gewu || "code", route, confidence, weights: llmWeights ?? undefined,
       coordinator: route === "consensus" ? "auditor" : gewu === "research" ? "researcher" : "coder",
       layer: "llm",
     };
   } catch { return null; }
 }
 
-function keywordRoute(task: string): RouteResult {
+function keywordRoute(task: string): BaseRoute {
   const t = task.toLowerCase();
   if (["delete", "remove", "deploy", "销毁", "删除", "部署"].some((k) => t.includes(k)))
     return { gewu: "solution", route: "consensus", confidence: 1, coordinator: "auditor", layer: "keyword" };
@@ -256,8 +270,28 @@ function keywordRoute(task: string): RouteResult {
 
 async function routeTask(task: string): Promise<RouteResult> {
   const llm = await llmRoute(task);
-  if (llm && llm.confidence >= 0.3) return llm;
-  return keywordRoute(task);
+  const base = llm && llm.confidence >= 0.3 ? llm : keywordRoute(task);
+  return finalizeRoute(task, base);
+}
+
+/** FR-A3.4：置信度随历史执行结果调整 */
+function loadRouteHistory(gewu: string): { samples: number; successRate: number } {
+  try {
+    const p = join(require("os").homedir(), ".eto", "memory", "metrics.jsonl");
+    if (!existsSync(p)) return { samples: 0, successRate: 0 };
+    const rows = readFileSync(p, "utf-8").split("\n").filter(Boolean)
+      .map(l => { try { return JSON.parse(l); } catch { return null; } })
+      .filter((r: any) => r && r.route === gewu && typeof r.success === "boolean") as any[];
+    if (rows.length === 0) return { samples: 0, successRate: 0 };
+    return { samples: rows.length, successRate: rows.filter(r => r.success).length / rows.length };
+  } catch { return { samples: 0, successRate: 0 }; }
+}
+
+/** 补全 RouteResult 的三体权重 / 纪元 / MODE / 派发计划（FR-A2.3 + FR-A3.1–A3.3） */
+function finalizeRoute(task: string, base: BaseRoute): RouteResult {
+  const routed = routeWithMode(task, base.route, base.weights);
+  const confidence = adjustConfidence(base.confidence, loadRouteHistory(base.gewu));
+  return { ...base, confidence, weights: routed.weights, era: routed.era, mode: routed.mode, dispatch: buildModeDispatch(routed) };
 }
 
 // ═══════════════════════════════════════════════════
@@ -508,6 +542,44 @@ async function tryDispatchToMCPAgent(peerName: string, task: string): Promise<st
   return null;
 }
 
+/**
+ * MODE 派发（FR-A3）：下游真正按 MODE 走不同路径，不是算出来放着。
+ * - direct：不走编排，返回简短指令（外层直接单次回答）
+ * - debate：共识审议（含 REWORK 轮次）
+ * - research / build / full：流水线步骤按 MODE 区分；乱纪元加深审核（FR-A3.3）
+ */
+async function dispatchByMode(task: string, route: RouteResult, contextTask: string): Promise<string> {
+  const dispatch = route.dispatch;
+
+  if (dispatch.path === "direct") {
+    return `MODE=direct：单次回答，不编排`;
+  }
+
+  if (dispatch.path === "consensus") {
+    const votes = await peerConsensus(contextTask, dispatch.reviewPeers);
+    const score = typeof votes?.final_score === "number" ? votes.final_score : (typeof votes?.avg_score === "number" ? votes.avg_score : 0.5);
+    const status = typeof votes?.status === "string" ? votes.status : (score >= 0.6 ? "approved" : "revise");
+    const actions = Array.isArray(votes?.actions) ? votes.actions : [];
+    return [
+      `MODE=debate | 纪元: ${route.era === "chaotic" ? "乱纪元" : "恒纪元"}`,
+      `共识: ${status} (${(score * 100).toFixed(0)}%) | REWORK 上限: ${dispatch.reworkRounds} 轮 | 审核深度: ${dispatch.reviewDepth}`,
+      actions.length > 0 ? `改进行动: ${actions.join("; ")}` : ``,
+    ].filter(Boolean).join("\n");
+  }
+
+  // pipeline / full：步骤按 MODE 取自 dispatch.steps（research/build/full 各不同）
+  const steps = dispatch.steps.length > 0 ? dispatch.steps : ["执行方案", "审查结果"];
+  const consensusPeers = dispatch.reviewPeers.length > 0 ? dispatch.reviewPeers : [route.coordinator, "auditor"];
+  const consensus = await peerConsensus(contextTask, consensusPeers);
+  const outputs = await executePlanViaMaestro(contextTask, steps);
+  const reworkNote = dispatch.reworkRounds > 1 ? `\nREWORK 上限: ${dispatch.reworkRounds} 轮（乱纪元自动加深，FR-A3.3）` : ``;
+  if (outputs.length > 0) {
+    const details = outputs.map((o: string, i: number) => `  >> Step ${i+1} (${steps[i]}):\n  ${o.slice(0, 300)}`).join("\n\n");
+    return `MODE=${route.mode} | 协调员: ${route.coordinator}\n共识: ${consensus?.status || "通过"}\n共 ${steps.length} 步${reworkNote}\n\n${details}`;
+  }
+  return `MODE=${route.mode} | 协调员: ${route.coordinator}, 共 ${steps.length} 步, 共识: ${consensus?.status || "通过"}${reworkNote}`;
+}
+
 async function execPlan(task: string, route: RouteResult): Promise<string> {
   // Inject TealContext (shared agent memory) into task
   let contextTask = task;
@@ -517,10 +589,12 @@ async function execPlan(task: string, route: RouteResult): Promise<string> {
     if (ctx) contextTask = ctx + "\n\n" + task;
   } catch {}
 
+  // FR-A3.1：协调员候选按 MODE 的 coordinatorHint 加权
+  const hint = route.dispatch.coordinatorHint;
   const candidates: [string, number][] = [
-    ["researcher", route.gewu === "research" ? 0.9 : 0.5],
-    ["coder", route.gewu === "code" ? 0.9 : 0.5],
-    ["auditor", route.gewu === "solution" ? 0.9 : 0.5],
+    ["researcher", (route.gewu === "research" ? 0.9 : 0.5) + (hint === "researcher" ? 0.1 : 0)],
+    ["coder", (route.gewu === "code" ? 0.9 : 0.5) + (hint === "coder" ? 0.1 : 0)],
+    ["auditor", (route.gewu === "solution" ? 0.9 : 0.5) + (hint === "auditor" ? 0.1 : 0)],
   ];
   const coordinator = await electCoordinator(candidates);
 
@@ -528,18 +602,8 @@ async function execPlan(task: string, route: RouteResult): Promise<string> {
   const mcpResult = await tryDispatchToMCPAgent(coordinator, contextTask);
   if (mcpResult) return mcpResult;
 
-  // Fallback to current LLM path
-  const steps = route.gewu === "code" ? ["调研需求", "编写代码", "审查质量"]
-    : route.gewu === "research" ? ["收集信息", "深度分析", "整理报告"]
-    : ["执行方案", "审查结果"];
-  const consensus = await peerConsensus(contextTask, [coordinator, "auditor"]);
-  const outputs = await executePlanViaMaestro(contextTask, steps);
-  const ok = outputs.length > 0;
-  if (ok) {
-    const details = outputs.map((o: string, i: number) => `  >> Step ${i+1} (${steps[i]}):\n  ${o.slice(0, 300)}`).join("\n\n");
-    return `协调员: ${coordinator}\n共识: ${consensus?.status || "通过"}\n共 ${steps.length} 步\n\n${details}`;
-  }
-  return `协调员: ${coordinator}, 共 ${steps.length} 步, 共识: ${consensus?.status || "通过"}`;
+  // MODE 派发：按 MODE 走不同路径（direct/debate/pipeline/full）
+  return dispatchByMode(task, route, contextTask);
 }
 
 // ═══════════════════════════════════════════════════
@@ -773,17 +837,23 @@ export default function (pi: ExtensionAPI) {
 
     const confidence = (route.confidence * 100).toFixed(0);
     ctx.ui.notify(`🔍 三镜路由: ${route.gewu} → ${route.route}  [${route.layer} ${confidence}%]`, "info");
+    ctx.ui.notify(`⚖️ 三体: ${formatWeights(route.weights)} | ${route.era === "chaotic" ? "乱纪元" : "恒纪元"}`, "info");
+    ctx.ui.notify(`🎯 MODE: ${route.mode} → dispatch: ${route.dispatch.path}`, "info");
     ctx.ui.notify(`👤 协调员: ${route.coordinator}`, "info");
 
     const tz = process.env.ETO_TIMEZONE || "Asia/Shanghai";
     const now = new Date().toLocaleString("zh-CN", { timeZone: tz });
     const widgetLines = [
       `📋 ETO | ${route.gewu} → ${route.route} | ${route.coordinator} | ${route.layer} ${confidence}%`,
+      `⚖️ ${formatWeights(route.weights)} | ${route.era === "chaotic" ? "乱纪元" : "恒纪元"}`,
+      `🎯 MODE: ${route.mode} → ${route.dispatch.path}`,
     ];
     const routeLines = [
       `## ETO 路由分析`,
       `当前时间: ${now}`,
       `路由: ${route.gewu} → ${route.route} (${route.layer}, ${confidence}%)`,
+      `三体: ${formatWeights(route.weights)} | 纪元: ${route.era === "chaotic" ? "乱纪元" : "恒纪元"}`,
+      `MODE: ${route.mode} | dispatch: ${route.dispatch.path} | 审核深度: ${route.dispatch.reviewDepth} | REWORK 上限: ${route.dispatch.reworkRounds} 轮`,
       `协调员: ${route.coordinator}`,
     ];
 
@@ -803,12 +873,13 @@ export default function (pi: ExtensionAPI) {
         return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
       }
 
-      // 1. 先选协调员（Raft）
+      // 1. 先选协调员（Raft）—— MODE 的 coordinatorHint 参与 weighting
       ctx.ui.notify(`🗳️ 选举协调员...`, "info");
+      const hint = route.dispatch.coordinatorHint;
       const candidates_: [string, number][] = [
-        ["researcher", route.gewu === "research" ? 0.9 : 0.5],
-        ["coder", route.gewu === "code" ? 0.9 : 0.5],
-        ["auditor", route.gewu === "solution" ? 0.9 : 0.5],
+        ["researcher", (route.gewu === "research" ? 0.9 : 0.5) + (hint === "researcher" ? 0.1 : 0)],
+        ["coder", (route.gewu === "code" ? 0.9 : 0.5) + (hint === "coder" ? 0.1 : 0)],
+        ["auditor", (route.gewu === "solution" ? 0.9 : 0.5) + (hint === "auditor" ? 0.1 : 0)],
       ];
       const coordinator = await electCoordinator(candidates_);
       ctx.ui.notify(`👤 协调员: ${coordinator}`, "info");
@@ -855,7 +926,7 @@ export default function (pi: ExtensionAPI) {
 
       routeLines.push(`Agent: ${agentNames}`);
       routeLines.push(`共识: ${consensusMatch?.[1] || "通过"}`);
-      routeLines.push(`计划: ${stepMatch?.[1] || "?"} 步`);
+      routeLines.push(`计划: ${stepMatch?.[1] || route.dispatch.steps.length} 步 (MODE=${route.mode})`);
       routeLines.push("");
       routeLines.push(synthesizeSummary(task, route, agents));
       routeLines.push("");
@@ -864,6 +935,11 @@ export default function (pi: ExtensionAPI) {
         routeLines.push("");
       }
       routeLines.push(decomposePrompt(agents));
+      if (route.mode === "full" || route.era === "chaotic") {
+        // FR-A3.3：乱纪元/full 增加审核深度与 REWORK 轮次，下达给执行 Agent
+        routeLines.push("");
+        routeLines.push(`[MODE 约束] 审核: ${route.dispatch.reviewPeers.join("+")} | REWORK 上限: ${route.dispatch.reworkRounds} 轮 | 深度: ${route.dispatch.reviewDepth}`);
+      }
 
       // 注入匹配的 skill 经验
       for (const sk of matchedSkills) {
@@ -879,21 +955,24 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (route.route === "consensus") {
-      ctx.ui.notify(`🤝 共识审议中...`, "info");
-      const cResult = await peerConsensus(task, ["researcher", "coder", "auditor"]);
+      // MODE=debate：审议成员与 REWORK 轮次来自 dispatch（乱纪元自动加深，FR-A3.3）
+      ctx.ui.notify(`🤝 共识审议中 (MODE=${route.mode}, ${route.dispatch.reviewDepth})...`, "info");
+      const reviewPeers = route.dispatch.reviewPeers.length > 0 ? route.dispatch.reviewPeers : ["researcher", "coder", "auditor"];
+      const cResult = await peerConsensus(task, reviewPeers);
       const score = typeof cResult?.final_score === "number" ? cResult.final_score : (typeof cResult?.avg_score === "number" ? cResult.avg_score : 0.5);
       const status = typeof cResult?.status === "string" ? cResult.status : (score >= 0.6 ? "approved" : "revise");
       ctx.ui.notify(`🤝 共识: ${status} (${(score * 100).toFixed(0)}%)`, "info");
       const actions = Array.isArray(cResult?.actions) ? cResult.actions : [];
       routeLines.push(`## 共识结果: ${status} (${(score * 100).toFixed(0)}%)`);
+      routeLines.push(`审议: ${reviewPeers.join("+")} | REWORK 上限: ${route.dispatch.reworkRounds} 轮 (${route.dispatch.reviewDepth})`);
       if (actions.length > 0) routeLines.push(`改进行动: ${actions.join("; ")}`);
       widgetLines.push(`🤝 ${status === "approved" ? "通过" : "需修正"} ${(score * 100).toFixed(0)}%`);
       ctx.ui.setWidget("eto-route", widgetLines);
       writeMetric(route.route, "consensus", status === "approved", 1);
     } else {
-      routeLines.push("");
-      routeLines.push("回复格式：");
-      routeLines.push("【路由】一句话说明任务归类");
+      // MODE=direct：单次回答
+      routeLines.push(`回复格式：`);
+      routeLines.push(`【路由】一句话说明任务归类 (MODE=${route.mode})`);
       routeLines.push("【回答】你的回答");
       routeLines.push("====END====");
       ctx.ui.setWidget("eto-route", widgetLines);
