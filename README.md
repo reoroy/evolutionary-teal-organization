@@ -48,7 +48,7 @@ Bootstrap 写入 Agent Profile、种子经验、**使用指南（`~/.eto/memory/
 
 ```bash
 python eto/stitches/test.py
-# 期望输出: 36 PASS（未安装 mcp 包时走降级检查）
+# 期望输出: 46 PASS（未安装 mcp 包时走降级检查）
 pip install mcp && python eto/stitches/test.py
 # 装了 mcp 包后：含 "mcp peer score" 检查 —— 用 mock MCP server
 # 验证 provider="mcp" 的 peer 能拿到非空评分
@@ -64,7 +64,7 @@ node --test tests/*.test.mjs
 
 | job | 验证内容 |
 |:----|:---------|
-| `demo` | 裸解释器（不装任何第三方包）直接跑 `eto/stitches/test.py`，断言退出码 0、PASS 数精确匹配（当前 36）、0 FAIL（Python 3.11 / 3.13 矩阵） |
+| `demo` | 裸解释器（不装任何第三方包）直接跑 `eto/stitches/test.py`，断言退出码 0、PASS 数精确匹配（当前 46）、0 FAIL（Python 3.11 / 3.13 矩阵） |
 | `clean install smoke` | 干净 venv 里 `pip install -e eto/`，检查 `eto-mesh` / `eto-bootstrap` 入口与导入，再跑一遍 demo 并同样断言 |
 | `no-langgraph degradation` | 安装去掉 langgraph 的 requirements，确认 langgraph 未安装、demo 仍全过（可选依赖降级路径的回归守卫） |
 | `sentinel preview injection` | Node 24 跑 `node --test tests/*.test.mjs`，验证安检预览不把捕获的 shell 输入喂给 shell |
@@ -513,6 +513,43 @@ eto_clarify("帮我优化一下")
 Clarify Gate 已在 Pi 的路由中默认启用。Review / Feedback Gate 通过 MCP 工具 `eto_review` / `eto_feedback` 暴露，Agent 自行决定展示方式。
 
 Feedback 约束按 **agent 名**读写：`dispatch_spec` 构造时显式携带 `agent` 字段（`eto.ts` / `bidding/workflow.py`），`inject_constraints` 据此匹配——不再从 tool 名反推。spec 缺 `agent` 字段时跳过注入并在 stderr 留下 `constraints_skipped` 记录，不静默。
+
+### 治理 — 权限绑定与任务预算（FR-D3）
+
+秦始皇治理层的强制门，在**真实 dispatch 路径**上执行（`mcp_dispatch.dispatch_with_spec` 调工具之前），不配置不生效、配置即 fail-closed：
+
+| 门 | 配置 | 语义 |
+|:---|:-----|:-----|
+| **permit 权限绑定** | `~/.eto/permit.json` | agent 名 × 操作类型白名单；未列出的 agent/操作一律拒绝 |
+| **budget 任务预算** | `~/.eto/budget.json` | 按 `task_id` 限制工具调用次数（`max_tool_calls`），超限即停 |
+
+```jsonc
+// ~/.eto/permit.json — 谁能调什么
+{
+  "default": "deny",                       // 缺省 fail-closed
+  "agents": {
+    "coder": ["agent_execute", "eto_*"],   // 精确名 + 尾通配
+    "researcher": ["eto_*"],               // 只许 eto_* 工具
+    "auditor": ["*"]                       // 全放行
+  }
+}
+
+// ~/.eto/budget.json — 每任务预算帽
+{
+  "default": {"max_tool_calls": 25},       // 未单列任务的缺省帽
+  "tasks": {
+    "task-42": {"max_tool_calls": 3}       // 单任务收紧
+  }
+}
+```
+
+行为要点：
+
+- **拒绝可定位，不静默**：越权返回 `{"_error": true, "_governance": true, "code": "PERMIT_DENIED", "message": "…"}`，message 写明谁、想调什么工具、配置在哪、怎么修；同时 stderr 落一条 `governance_denied` JSON 日志。
+- **超预算即停**：超限返回 `BUDGET_EXCEEDED`（带 `已用 N/M` 用量）；LangGraph 工作流步骤标 `failed` 并带 `[BUDGET_EXCEEDED]` 前缀 error，`execute_workflow` 汇总 `budget_exceeded: true`，任务终止并如实上报，绝不静默截断。
+- **fail-closed**：配置文件损坏 / agents 字段类型不对 / 启用 permit 后 spec 缺 agent（身份不明）→ 一律拒绝并给出原因。
+- **向后兼容**：两个配置文件都不存在 → 未启用治理，行为与旧版一致。预算计数按 `task_id` 隔离（`~/.eto/budget_counters/`），spec 缺 `task_id` 时预算检查不适用。
+- `eto.ts` 的 `execPlan` 会为每个 plan 生成 `task_id`（`task-<时间戳>-<随机>`）并透传 dispatch 与工作流，预算按任务核算。
 
 ### context_block → agentmemory ✅
 

@@ -232,6 +232,7 @@ class WorkflowState(TypedDict):
     current_step: int
     overall_status: str
     error: str
+    task_id: str
 
 def _is_complex_task(task: str) -> bool:
     """与 eto.ts isComplexTask() 保持一致的复杂度检测"""
@@ -280,13 +281,18 @@ def _make_node_fn(step: dict):
             from eto.stitches.mcp_dispatch import dispatch_with_spec
             # 用 sys.executable 保证子进程 MCP server 用当前解释器（"python" 在
             # 某些环境不存在，会静默变成 dispatch 空结果 → 假成功）；
-            # agent 字段显式传入，feedback 约束按 agent 名注入（issue #1 P0-6）
+            # agent 字段显式传入，feedback 约束按 agent 名注入（issue #1 P0-6）；
+            # task_id 透传预算治理（issue #27 FR-D3）：预算超限时 dispatch 直接拒绝。
             server_cmd = [sys.executable, "-m", "eto.mcp_server"]
-            spec = json.dumps({"server_cmd": server_cmd, "tool": "agent_execute", "agent": step["agent"], "task": state["task"], "system_prompt": sp, "skills": skills, "mcp_tools": tools, "params": {}})
+            spec = json.dumps({"server_cmd": server_cmd, "tool": "agent_execute", "agent": step["agent"], "task": state["task"], "task_id": state.get("task_id", ""), "system_prompt": sp, "skills": skills, "mcp_tools": tools, "params": {}})
             result = dispatch_with_spec(spec)
+            # 治理拒绝（权限/预算）→ failed + governance code，如实上报不许静默
+            if isinstance(result, dict) and result.get("_governance"):
+                state["step_results"].append({"agent": step["agent"], "status": "failed", "output": "",
+                                              "error": f"[{result.get('code')}] {result.get('message')}", "retries": 0})
             # 假成功防线：dispatch 返回空 / _error / status=failed 都必须标 failed，
             # 否则工作流对外报告「已完成」而每步输出为空。
-            if not result or result.get("_error"):
+            elif not result or result.get("_error"):
                 reason = (result or {}).get("message", "dispatch_with_spec 返回空结果（MCP server 未启动或工具不存在）")
                 state["step_results"].append({"agent": step["agent"], "status": "failed", "output": "", "error": str(reason), "retries": 0})
             elif result.get("status") == "failed":
@@ -343,33 +349,42 @@ def build_graph(workflow_design: dict) -> "StateGraph":
             graph.add_edge(nid, END)
     return graph.compile()
 
-def execute_workflow(workflow_design_json: str, task: str) -> str:
+def execute_workflow(workflow_design_json: str, task: str, task_id: str = "") -> str:
     wf = json.loads(workflow_design_json) if isinstance(workflow_design_json, str) else workflow_design_json
     graph = build_graph(wf)
-    initial = WorkflowState(task=task, task_type="code", steps=wf["steps"], step_results=[], current_step=0, overall_status="running", error="")
+    initial = WorkflowState(task=task, task_type="code", steps=wf["steps"], step_results=[], current_step=0, overall_status="running", error="", task_id=task_id)
     final = graph.invoke(initial)
     success = all(r["status"] == "ok" for r in final["step_results"])
 
     # 暴露错误：失败步骤的 error 汇总到顶层，不吞掉
     errors = [f"step {i+1} ({r['agent']}): {r.get('error', '')}" for i, r in enumerate(final["step_results"]) if r["status"] == "failed"]
 
+    # 预算超限 = 终止态（FR-D3.3）：任务停止并如实上报，而不是继续跑完剩余步骤
+    budget_exceeded = any(
+        isinstance(r.get("error"), str) and r["error"].startswith("[BUDGET_EXCEEDED]")
+        for r in final["step_results"]
+    )
+
     # 写工作流完成 summary 到 shared_memory
     try:
         from eto.stitches.memory.shared_memory import write as _write
         _write(f"wf_complete_{id(graph)}", {
-            "type": "workflow_complete", "task": task,
+            "type": "workflow_complete", "task": task, "task_id": task_id,
             "total_steps": len(final["step_results"]), "success": success,
+            "budget_exceeded": budget_exceeded,
             "step_summary": [{"agent": r["agent"], "status": r["status"]} for r in final["step_results"]],
         }, author="workflow", ttl=86400)
     except: pass
 
-    return json.dumps({"step_results": final["step_results"], "success": success, "total_steps": len(final["step_results"]), "errors": errors}, ensure_ascii=False)
+    return json.dumps({"step_results": final["step_results"], "success": success,
+                       "total_steps": len(final["step_results"]), "errors": errors,
+                       "budget_exceeded": budget_exceeded, "task_id": task_id}, ensure_ascii=False)
 
-def run_step(step_json: str, task: str) -> str:
+def run_step(step_json: str, task: str, task_id: str = "") -> str:
     """执行单个步骤节点（不依赖 langgraph 建图），供集成测试直接验证状态语义。"""
     step = json.loads(step_json) if isinstance(step_json, str) else step_json
     node = _make_node_fn(step)
-    state = WorkflowState(task=task, task_type="code", steps=[step], step_results=[], current_step=0, overall_status="running", error="")
+    state = WorkflowState(task=task, task_type="code", steps=[step], step_results=[], current_step=0, overall_status="running", error="", task_id=task_id)
     node(state)
     return json.dumps(state["step_results"][0], ensure_ascii=False)
 

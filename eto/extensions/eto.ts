@@ -558,6 +558,10 @@ function loadPeerConfig(): Record<string, any> {
   try { return JSON.parse(readFileSync(cfgPath, "utf-8")) } catch { return {} }
 }
 
+// 当前任务的任务级预算标识（FR-D3.2）。空串 = 本次会话没有任务预算概念，
+// dispatch 侧对缺 task_id 的 spec 不做预算检查（向后兼容）。
+let currentTaskId = "";
+
 async function tryDispatchToMCPAgent(peerName: string, task: string): Promise<string | null> {
   const config = loadPeerConfig();
   const peerCfg = config?.peers?.[peerName];
@@ -569,8 +573,10 @@ async function tryDispatchToMCPAgent(peerName: string, task: string): Promise<st
 
   try {
     // agent 字段显式传入：Feedback Gate 的约束按 agent 名读写，
-    // 不再从 tool 名反推（tool=agent_execute 时反推恒为空串，见 issue #1 P0-6）
+    // 不再从 tool 名反推（tool=agent_execute 时反推恒为空串，见 issue #1 P0-6）。
+    // task_id 透传任务预算治理（issue #27 FR-D3）：预算按任务核算。
     const spec: Record<string, any> = { server_cmd: cmd, tool, task, agent: peerName };
+    if (currentTaskId) spec.task_id = currentTaskId;
     const ds = peerCfg.dispatch_spec;
     if (ds) {
       if (ds.system_prompt) spec.system_prompt = ds.system_prompt;
@@ -583,6 +589,10 @@ async function tryDispatchToMCPAgent(peerName: string, task: string): Promise<st
     const result = await callStitchAsync("mcp_dispatch", "dispatch_with_spec", JSON.stringify(spec));
     if (result && !("_error" in result)) {
       return `[MCP Agent: ${peerName}]\n结果: ${JSON.stringify(result, null, 2)}`;
+    }
+    // 治理拒绝（权限/预算，FR-D3）：如实上报给用户，不许静默吞掉
+    if (result && (result as any)._governance) {
+      return `[治理拦截: ${peerName}]\n${(result as any).code}: ${(result as any).message}`;
     }
   } catch {}
   return null;
@@ -630,6 +640,9 @@ async function dispatchByMode(task: string, route: RouteResult, contextTask: str
 }
 
 async function execPlan(task: string, route: RouteResult): Promise<string> {
+  // 任务级预算标识（FR-D3.2）：一个 plan 一个 task_id，预算按任务核算
+  currentTaskId = `task-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+
   // Inject TealContext (shared agent memory) into task
   let contextTask = task;
   try {
@@ -945,10 +958,20 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (workflowSteps && workflowSteps.length > 1) {
-        const execResult = await callStitchAsync("bidding.workflow", "execute_workflow", JSON.stringify(wfResult), task);
+        // task_id 透传工作流预算治理（issue #27 FR-D3）
+        const execResult = await callStitchAsync("bidding.workflow", "execute_workflow", JSON.stringify(wfResult), task, currentTaskId);
         const exec = execResult as any;
         const stepLines = (exec?.step_results || []).map((r: any, i: number) => `  >> Step ${i+1} (${r.agent}): ${r.status}${r.status === "failed" && r.error ? ` — ${String(r.error).slice(0, 120)}` : ""}`).join("\n");
         const wfOk = exec?.success === true;
+        if (exec?.budget_exceeded) {
+          ctx.ui.notify(`🛑 任务预算超限，已停止（${currentTaskId}）`, "warning");
+          routeLines.push(`## ETO 工作流 | 协调员: ${coordinator} | 🛑 预算超限终止`);
+          routeLines.push(stepLines);
+          for (const err of ((exec?.errors || []) as string[])) routeLines.push(`  !! ${err.slice(0, 200)}`);
+          widgetLines.push(`🛑 预算超限: 任务已停止 (${exec?.total_steps || 0} 步后)`);
+          ctx.ui.setWidget("eto-route", widgetLines);
+          return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
+        }
         ctx.ui.notify(wfOk ? `✅ 工作流完成` : `⚠️ 工作流有失败步骤`, "info");
         routeLines.push(`## ETO 工作流 | 协调员: ${coordinator} | ${wfOk ? "成功" : "失败"}`);
         routeLines.push(stepLines);
