@@ -3,6 +3,11 @@
 # 供 `pip install -r requirements.txt`（CI 与无 -e 安装场景）使用。
 # 改依赖时两处同步改。
 rich>=13.0
+# pyyaml：当前无代码 import（2026-11-03 核对，grep -rn "import yaml" eto/ 无结果）。
+# 保留给 config.yaml.example 的远期配置路径；接线前属「声明未用」，届时若仍未用应移除。
 pyyaml>=6.0
 mcp>=1.2,<2
+# langgraph 为可选运行依赖：未安装时 bidding/workflow.py 降级（CI without-langgraph job 覆盖）。
 langgraph>=0.2.0
+# 注：Roadmap 提到的 protolink / nexus / aegean-consensus / gravity-ai / skillspector
+# 均未接入（自实现），故此处与 eto/pyproject.toml 均不声明。

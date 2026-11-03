@@ -5,6 +5,7 @@ description = "ETO — Evolutionary Teal Organization: Bootstrap + Stitches"
 requires-python = ">=3.10"
 dependencies = [
     "rich>=13.0",
+    # pyyaml 声明未用（2026-11-03 核对无 import）；保留给 config.yaml 远期路径，见根 requirements.txt 注释
     "pyyaml>=6.0",
     "mcp>=1.2,<2",
     "langgraph>=0.2.0",
