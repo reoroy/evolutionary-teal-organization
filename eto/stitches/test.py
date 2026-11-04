@@ -557,6 +557,17 @@ p = similarity("abc", "abc") == 1.0 and similarity("abc", "xyz") < 0.5 and compa
 print(f"{OK_MARK if p else FAIL_MARK} iteration similarity 相似度计算")
 all_ok = all_ok and p
 
+# 失败轮不算收敛：每轮都返回同一条错误时相似度=1.0，据此判收敛是假信号
+# （修复前：无 provider 环境 Iteration 第一对轮次就报 converged=True）
+def _mock_iter_failed(round_no):
+    return {"status": "failed", "output": "", "error": "provider 不可用"}
+_it_fail = iteration_loop("失败任务", max_rounds=3, threshold=0.9, execute_round=_mock_iter_failed)
+p = (_it_fail["rounds"] == 3 and _it_fail["converged"] is False
+     and _it_fail["failed_rounds"] == [1, 2, 3]
+     and all(r["status"] == "failed" for r in _it_fail["round_results"]))
+print(f"{OK_MARK if p else FAIL_MARK} iteration失败不收敛 同错误≠收敛")
+all_ok = all_ok and p
+
 # 5. Iteration 真实执行链路（run_iteration 走 run_step dispatch，无 provider 环境 → 失败轮也照跑并落账）
 with tempfile.TemporaryDirectory() as tmp_home:
     env = {**os.environ, "HOME": tmp_home}
@@ -573,8 +584,10 @@ with tempfile.TemporaryDirectory() as tmp_home:
         _it3 = json.loads(r.stdout) if r.stdout.strip() else {}
     except json.JSONDecodeError:
         _it3 = {}
-    # 无 provider 环境：两轮输出同为失败串 → 相似度 1.0 → 收敛；重点断言「真的跑满可跑的轮次」
-    p = r.returncode == 0 and _it3.get("rounds") == 2 and _it3.get("has_outputs") is True and isinstance(_it3.get("converged"), bool)
+    # 无 provider 环境：每轮都是同一条失败 → 相似度 1.0 但失败轮不算收敛。
+    # 重点断言「真的跑满可跑的轮次」且没有把失败当收敛。
+    p = (r.returncode == 0 and _it3.get("rounds") == 2 and _it3.get("has_outputs") is True
+         and _it3.get("converged") is False)
     print(f"{OK_MARK if p else FAIL_MARK} iteration真实链路   多轮执行落账")
     all_ok = all_ok and p
 
@@ -598,21 +611,58 @@ with tempfile.TemporaryDirectory() as tmp_home:
     p = r.returncode == 0 and _rw2.get("rounds_run") == 2 and _rw2.get("loop_type") == "rework"
     print(f"{OK_MARK if p else FAIL_MARK} rework真实链路     失败重跑+落账")
     all_ok = all_ok and p
-    # 落账进 shared_memory（集体回顾的数据源）
+    # 落账进 shared_memory（集体回顾的数据源）：agent 必须是真实失败的 agent，
+    # 不是 loop 类型 —— 否则回顾的权重调整按 profiles.json 查表永远匹配不上。
     r2 = subprocess.run(
         [PY, "-c",
          "import sys, json; sys.path.insert(0, %r);" % str(ROOT.parent.parent) +
          "from eto.stitches.memory.shared_memory import read; "
          "h = read('collective_reflection:history') or {}; "
-         "print(json.dumps({'total': h.get('total', 0), 'rounds': len(h.get('rounds', []))}))"],
+         "print(json.dumps({'total': h.get('total', 0), 'rounds': len(h.get('rounds', [])), "
+         "'agent': (h.get('rounds') or [{}])[-1].get('agent'), "
+         "'detail': (h.get('rounds') or [{}])[-1].get('detail')}))"],
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, env=env,
     )
     try:
         _hist = json.loads(r2.stdout) if r2.stdout.strip() else {}
     except json.JSONDecodeError:
         _hist = {}
-    p = r2.returncode == 0 and _hist.get("total", 0) >= 1
-    print(f"{OK_MARK if p else FAIL_MARK} rework轮次落账     history有记录")
+    p = (r2.returncode == 0 and _hist.get("total", 0) >= 1
+         and _hist.get("agent") == "coder"
+         and "loop=rework" in (_hist.get("detail") or ""))
+    print(f"{OK_MARK if p else FAIL_MARK} rework轮次落账     真实agent+loop标注")
+    all_ok = all_ok and p
+
+# 6b. 生产主路径落账：eto.ts 的 plan 分支每次走 execute_workflow，它必须把轮次记进
+#     集体回顾历史（否则回顾只看得到手动 run_rework/run_iteration 的样本）。
+#     execute_workflow 需要 langgraph 建图，而 demo job 刻意不装 langgraph，
+#     所以这里直接验证落账函数（execute_workflow 在成功/失败后都调它）+ 源码接线。
+with tempfile.TemporaryDirectory() as tmp_home:
+    env = {**os.environ, "HOME": tmp_home}
+    r = subprocess.run(
+        [PY, "-c",
+         "import sys, json; sys.path.insert(0, %r);" % str(ROOT.parent.parent) +
+         "from eto.stitches.bidding.workflow import _record_workflow_round; "
+         "from eto.stitches.memory.shared_memory import read; "
+         "_record_workflow_round('审查代码', False, "
+         "[{'agent': 'researcher', 'status': 'ok'}, {'agent': 'auditor', 'status': 'failed'}], "
+         "['step 2 (auditor): boom'], 2); "
+         "h = read('collective_reflection:history') or {}; "
+         "print(json.dumps({'total': h.get('total', 0), 'success': (h.get('rounds') or [{}])[-1].get('success'), "
+         "'agent': (h.get('rounds') or [{}])[-1].get('agent'), "
+         "'detail': (h.get('rounds') or [{}])[-1].get('detail')}))"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90, env=env,
+    )
+    try:
+        _prod = json.loads(r.stdout) if r.stdout.strip() else {}
+    except json.JSONDecodeError:
+        _prod = {}
+    _wf_prod_src = (ROOT / "bidding" / "workflow.py").read_text(encoding="utf-8")
+    p = (r.returncode == 0 and _prod.get("total") == 1
+         and _prod.get("success") is False and _prod.get("agent") == "auditor"
+         and "boom" in (_prod.get("detail") or "")
+         and "_record_workflow_round(task, success, final[\"step_results\"]" in _wf_prod_src)
+    print(f"{OK_MARK if p else FAIL_MARK} workflow轮次落账   生产路径进回顾")
     all_ok = all_ok and p
 
 # 7. 集体回顾触发条件（FR-E1.1/E1.2）：每 N 轮 / 最近 5 轮失败 > 3
@@ -729,6 +779,22 @@ p = ('pi.registerCommand("reflect"' in ts_src2
      and 'detect_loop_intent' in ts_src2
      and "Loop 意图" in ts_src2)
 print(f"{OK_MARK if p else FAIL_MARK} eto.ts reflect/loop  命令+意图接线")
+all_ok = all_ok and p
+
+# 顺序断言：Loop 意图 push 到 widgetLines/routeLines 必须在 const 声明之后。
+# 修复前该块在声明之前，任何含「重试/迭代/定时」等关键词的任务都会 TDZ ReferenceError，
+# 整个 before_agent_start 抛错、路由失效。
+_ts_decl = ts_src2.index("const widgetLines = [")
+_ts_loop = ts_src2.index("detect_loop_intent")
+_ts_push = ts_src2.index("widgetLines.push(`🔄 ${loopIntent.type}`)")
+p = _ts_decl < _ts_loop < _ts_push
+print(f"{OK_MARK if p else FAIL_MARK} eto.ts loop非TDZ      声明先于push")
+all_ok = all_ok and p
+
+# MODE dispatch 的 reworkRounds 必须真的下发给 execute_workflow（此前只打印不下发）
+p = ('"execute_workflow", JSON.stringify(wfResult), task, reworkRounds' in ts_src2
+     and "route.dispatch.reworkRounds" in ts_src2)
+print(f"{OK_MARK if p else FAIL_MARK} eto.ts rework下发     MODE轮次进执行")
 all_ok = all_ok and p
 
 sys.exit(0 if all_ok else 1)
