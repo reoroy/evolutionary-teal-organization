@@ -906,7 +906,24 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(`🎯 MODE: ${route.mode} → dispatch: ${route.dispatch.path}`, "info");
     ctx.ui.notify(`👤 协调员: ${route.coordinator}`, "info");
 
-    // FR-E2.1：通政司路由阶段检测循环意图（Rework/Iteration 可执行，Watch/Cron 报缺失）
+    const tz = process.env.ETO_TIMEZONE || "Asia/Shanghai";
+    const now = new Date().toLocaleString("zh-CN", { timeZone: tz });
+    const widgetLines = [
+      `📋 ETO | ${route.gewu} → ${route.route} | ${route.coordinator} | ${route.layer} ${confidence}%`,
+      `⚖️ ${formatWeights(route.weights)} | ${route.era === "chaotic" ? "乱纪元" : "恒纪元"}`,
+      `🎯 MODE: ${route.mode} → ${route.dispatch.path}`,
+    ];
+    const routeLines = [
+      `## ETO 路由分析`,
+      `当前时间: ${now}`,
+      `路由: ${route.gewu} → ${route.route} (${route.layer}, ${confidence}%)`,
+      `三体: ${formatWeights(route.weights)} | 纪元: ${route.era === "chaotic" ? "乱纪元" : "恒纪元"}`,
+      `MODE: ${route.mode} | dispatch: ${route.dispatch.path} | 审核深度: ${route.dispatch.reviewDepth} | REWORK 上限: ${route.dispatch.reworkRounds} 轮`,
+      `协调员: ${route.coordinator}`,
+    ];
+
+    // FR-E2.1：通政司路由阶段检测循环意图（Rework/Iteration 可执行，Watch/Cron 报缺失）。
+    // 必须在 widgetLines/routeLines 声明之后 push，否则命中关键词的任务会 TDZ 崩溃。
     let loopIntent: any = null;
     try {
       const li = await callStitchAsync("reflection", "detect_loop_intent", task);
@@ -925,22 +942,6 @@ export default function (pi: ExtensionAPI) {
         routeLines.push(`[Loop 约束] 多轮迭代执行，输出需可比较（收敛阈值 0.9），收敛即停`);
       }
     }
-
-    const tz = process.env.ETO_TIMEZONE || "Asia/Shanghai";
-    const now = new Date().toLocaleString("zh-CN", { timeZone: tz });
-    const widgetLines = [
-      `📋 ETO | ${route.gewu} → ${route.route} | ${route.coordinator} | ${route.layer} ${confidence}%`,
-      `⚖️ ${formatWeights(route.weights)} | ${route.era === "chaotic" ? "乱纪元" : "恒纪元"}`,
-      `🎯 MODE: ${route.mode} → ${route.dispatch.path}`,
-    ];
-    const routeLines = [
-      `## ETO 路由分析`,
-      `当前时间: ${now}`,
-      `路由: ${route.gewu} → ${route.route} (${route.layer}, ${confidence}%)`,
-      `三体: ${formatWeights(route.weights)} | 纪元: ${route.era === "chaotic" ? "乱纪元" : "恒纪元"}`,
-      `MODE: ${route.mode} | dispatch: ${route.dispatch.path} | 审核深度: ${route.dispatch.reviewDepth} | REWORK 上限: ${route.dispatch.reworkRounds} 轮`,
-      `协调员: ${route.coordinator}`,
-    ];
 
     if (route.route === "plan") {
       // 0. Clarify Gate — 模糊指令拦截
@@ -980,15 +981,22 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (workflowSteps && workflowSteps.length > 1) {
-        const execResult = await callStitchAsync("bidding.workflow", "execute_workflow", JSON.stringify(wfResult), task);
+        // Rework 轮次来自 MODE dispatch（恒纪元 1 轮 / 乱纪元 3 轮，FR-A3.3），
+        // 与 workflow.py 的整轮 rework 对接；此前该配置只打印不下发。
+        const reworkRounds = typeof route.dispatch.reworkRounds === "number" ? route.dispatch.reworkRounds : 1;
+        const execResult = await callStitchAsync("bidding.workflow", "execute_workflow", JSON.stringify(wfResult), task, reworkRounds);
         const exec = execResult as any;
         const stepLines = (exec?.step_results || []).map((r: any, i: number) => `  >> Step ${i+1} (${r.agent}): ${r.status}${r.status === "failed" && r.error ? ` — ${String(r.error).slice(0, 120)}` : ""}`).join("\n");
         const wfOk = exec?.success === true;
-        ctx.ui.notify(wfOk ? `✅ 工作流完成` : `⚠️ 工作流有失败步骤`, "info");
+        const reworkInfo = exec?.rework || {};
+        const roundsRun = typeof reworkInfo.rounds_run === "number" ? reworkInfo.rounds_run : 1;
+        ctx.ui.notify(wfOk ? `✅ 工作流完成${roundsRun > 1 ? `（rework ${roundsRun} 轮）` : ""}` : `⚠️ 工作流有失败步骤`, "info");
         routeLines.push(`## ETO 工作流 | 协调员: ${coordinator} | ${wfOk ? "成功" : "失败"}`);
         routeLines.push(stepLines);
         for (const err of ((exec?.errors || []) as string[])) routeLines.push(`  !! ${err.slice(0, 200)}`);
+        if (roundsRun > 1) routeLines.push(`Rework: 已重跑 ${roundsRun} 轮（上限 ${reworkRounds}）`);
         widgetLines.push(wfOk ? `🔄 ${(wfResult as any).workflow || "workflow"} (${exec?.total_steps || 0} 步)` : `⚠️ ${(wfResult as any).workflow || "workflow"} 失败 (${(exec?.errors || []).length} 项错误)`);
+        if (roundsRun > 1) widgetLines.push(`♻️ rework ${roundsRun} 轮`);
         ctx.ui.setWidget("eto-route", widgetLines);
         return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
       }
