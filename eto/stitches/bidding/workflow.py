@@ -235,6 +235,8 @@ class WorkflowState(TypedDict):
     # Rework Loop（FR-E2.2）：当前重跑轮次 + 上一轮失败原因
     rework_round: int
     rework_feedback: str
+    # 任务预算治理（FR-D3）
+    task_id: str
 
 def _is_complex_task(task: str) -> bool:
     """与 eto.ts isComplexTask() 保持一致的复杂度检测"""
@@ -290,13 +292,18 @@ def _make_node_fn(step: dict):
             from eto.stitches.mcp_dispatch import dispatch_with_spec
             # 用 sys.executable 保证子进程 MCP server 用当前解释器（"python" 在
             # 某些环境不存在，会静默变成 dispatch 空结果 → 假成功）；
-            # agent 字段显式传入，feedback 约束按 agent 名注入（issue #1 P0-6）
+            # agent 字段显式传入，feedback 约束按 agent 名注入（issue #1 P0-6）；
+            # task_id 透传预算治理（issue #27 FR-D3）：预算超限时 dispatch 直接拒绝。
             server_cmd = [sys.executable, "-m", "eto.mcp_server"]
-            spec = json.dumps({"server_cmd": server_cmd, "tool": "agent_execute", "agent": step["agent"], "task": state["task"], "system_prompt": sp, "skills": skills, "mcp_tools": tools, "params": {}})
+            spec = json.dumps({"server_cmd": server_cmd, "tool": "agent_execute", "agent": step["agent"], "task": state["task"], "task_id": state.get("task_id", ""), "system_prompt": sp, "skills": skills, "mcp_tools": tools, "params": {}})
             result = dispatch_with_spec(spec)
+            # 治理拒绝（权限/预算）→ failed + governance code，如实上报不许静默
+            if isinstance(result, dict) and result.get("_governance"):
+                state["step_results"].append({"agent": step["agent"], "status": "failed", "output": "",
+                                              "error": f"[{result.get('code')}] {result.get('message')}", "retries": 0})
             # 假成功防线：dispatch 返回空 / _error / status=failed 都必须标 failed，
             # 否则工作流对外报告「已完成」而每步输出为空。
-            if not result or result.get("_error"):
+            elif not result or result.get("_error"):
                 reason = (result or {}).get("message", "dispatch_with_spec 返回空结果（MCP server 未启动或工具不存在）")
                 state["step_results"].append({"agent": step["agent"], "status": "failed", "output": "", "error": str(reason), "retries": 0})
             elif result.get("status") == "failed":
@@ -393,12 +400,13 @@ def rework_loop(task: str, steps: list, rework_rounds: int = 1, execute_round=No
             "loop": {"type": "rework", "round": len(rounds), "maxRounds": rework_rounds}}
 
 
-def _rework_execute_round(task: str, steps: list, feedback: str = "") -> list:
+def _rework_execute_round(task: str, steps: list, feedback: str = "",
+                          task_id: str = "") -> list:
     """Rework 默认轮执行器：顺序跑 steps（与 run_step 同一节点函数，
     带 rework_feedback 注入），不依赖 langgraph 建图。"""
     state = WorkflowState(task=task, task_type="code", steps=steps, step_results=[],
                           current_step=0, overall_status="running", error="",
-                          rework_round=0, rework_feedback=feedback)
+                          rework_round=0, rework_feedback=feedback, task_id=task_id)
     for step in steps:
         _make_node_fn(step)(state)
     return state["step_results"]
@@ -433,36 +441,51 @@ def _last_failed_agent(rounds: list) -> str:
     return "?"
 
 
-def execute_workflow(workflow_design_json: str, task: str, rework_rounds: int = 1) -> str:
+def execute_workflow(workflow_design_json: str, task: str, task_id: str = "",
+                     rework_rounds: int = 1) -> str:
     wf = json.loads(workflow_design_json) if isinstance(workflow_design_json, str) else workflow_design_json
     graph = build_graph(wf)
     # Rework Loop（FR-E2.2）：整轮失败 → failure_feedback 收集原因 → 带因重跑。
     # 与图内条件边的 step 级 retry 协调：retry 消耗的是步骤的 max_retries，
     # rework 消耗的是这里的 rework_rounds，两层各自计数。
+    # task_id 保持第 3 位（FR-D3 预算治理的既有契约），rework 轮次排在其后。
     feedback = ""
     final = None
     rounds_run = 0
     for round_no in range(rework_rounds + 1):
         initial = WorkflowState(task=task, task_type="code", steps=wf["steps"], step_results=[],
                                 current_step=0, overall_status="running", error="",
-                                rework_round=round_no, rework_feedback=feedback)
+                                rework_round=round_no, rework_feedback=feedback,
+                                task_id=task_id)
         final = graph.invoke(initial)
         rounds_run = round_no + 1
         success = all(r["status"] == "ok" for r in final["step_results"])
         if success:
             break
+        # 预算超限是终止态（FR-D3.3）：重跑只会再次撞墙，直接停
+        if any(isinstance(r.get("error"), str) and r["error"].startswith("[BUDGET_EXCEEDED]")
+               for r in final["step_results"]):
+            break
         feedback = failure_feedback(final["step_results"])
+
     success = all(r["status"] == "ok" for r in final["step_results"])
 
     # 暴露错误：失败步骤的 error 汇总到顶层，不吞掉
     errors = [f"step {i+1} ({r['agent']}): {r.get('error', '')}" for i, r in enumerate(final["step_results"]) if r["status"] == "failed"]
 
+    # 预算超限 = 终止态（FR-D3.3）：任务停止并如实上报，而不是继续跑完剩余步骤
+    budget_exceeded = any(
+        isinstance(r.get("error"), str) and r["error"].startswith("[BUDGET_EXCEEDED]")
+        for r in final["step_results"]
+    )
+
     # 写工作流完成 summary 到 shared_memory
     try:
         from eto.stitches.memory.shared_memory import write as _write
         _write(f"wf_complete_{id(graph)}", {
-            "type": "workflow_complete", "task": task,
+            "type": "workflow_complete", "task": task, "task_id": task_id,
             "total_steps": len(final["step_results"]), "success": success,
+            "budget_exceeded": budget_exceeded,
             "step_summary": [{"agent": r["agent"], "status": r["status"]} for r in final["step_results"]],
         }, author="workflow", ttl=86400)
     except: pass
@@ -472,7 +495,12 @@ def execute_workflow(workflow_design_json: str, task: str, rework_rounds: int = 
     # 回顾只能看到手动 run_rework/run_iteration 的样本。
     _record_workflow_round(task, success, final["step_results"], errors, rounds_run)
 
-    return json.dumps({"step_results": final["step_results"], "success": success, "total_steps": len(final["step_results"]), "errors": errors, "rework": {"rounds_run": rounds_run, "maxRounds": rework_rounds, "final_feedback": "" if success else feedback}}, ensure_ascii=False)
+    return json.dumps({"step_results": final["step_results"], "success": success,
+                       "total_steps": len(final["step_results"]), "errors": errors,
+                       "budget_exceeded": budget_exceeded, "task_id": task_id,
+                       "rework": {"rounds_run": rounds_run, "maxRounds": rework_rounds,
+                                  "final_feedback": "" if success else feedback}},
+                      ensure_ascii=False)
 
 
 def _record_workflow_round(task: str, success: bool, step_results: list,
@@ -488,11 +516,14 @@ def _record_workflow_round(task: str, success: bool, step_results: list,
     except Exception as e:
         print(f"reflect record skipped: {e}", file=sys.stderr)
 
-def run_step(step_json: str, task: str) -> str:
+
+def run_step(step_json: str, task: str, task_id: str = "") -> str:
     """执行单个步骤节点（不依赖 langgraph 建图），供集成测试直接验证状态语义。"""
     step = json.loads(step_json) if isinstance(step_json, str) else step_json
     node = _make_node_fn(step)
-    state = WorkflowState(task=task, task_type="code", steps=[step], step_results=[], current_step=0, overall_status="running", error="", rework_round=0, rework_feedback="")
+    state = WorkflowState(task=task, task_type="code", steps=[step], step_results=[],
+                          current_step=0, overall_status="running", error="",
+                          rework_round=0, rework_feedback="", task_id=task_id)
     node(state)
     return json.dumps(state["step_results"][0], ensure_ascii=False)
 

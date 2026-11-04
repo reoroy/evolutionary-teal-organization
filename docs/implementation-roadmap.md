@@ -139,11 +139,11 @@ Pi CLI（入口 — 最后一步的执行器）
 ## Phase 4：进化学习
 
 > 系统从自己的执行历史中学习。见 [phase-4-evolution](phase-4-evolution.md)。
-> **2026-11-04 状态**：🟡 部分完成——失败聚类、策略权重调整、回顾报告、Rework/Iteration Loop 已实现（`eto/stitches/reflection.py`，权重经 `shared_memory` 被竞标降级路径消费）；规则去活、记忆修剪、成本报告、Watch/Cron 执行器仍缺失。跟踪 issue：#28。
+> **2026-11-04 状态**：🟡 部分完成——失败聚类、回顾报告、Rework/Iteration Loop 已实现（`eto/stitches/reflection.py`），策略权重调整有两条通路：竞标 weights（`protocol._apply_adjustment`）+ 路由历史回读（FR-A2.4 置信度学习，`eto/extensions/confidence-learning.mjs`，见 #30）。规则去活、记忆修剪、成本报告、Watch/Cron 执行器仍缺失。跟踪 issue：#28。
 
 ```
 第 1 步：agentmemory -> 聚类失败模式                # ✅ 可用（reflection.run_reflection）
-第 2 步：策略调整 -> 修改选举/路由权重              # 🟡 竞标 weights 已回读生效（protocol._apply_adjustment）
+第 2 步：策略调整 -> 修改选举/路由权重              # 🟡 竞标 weights 回读生效（protocol._apply_adjustment）；路由部分已实现（routing-history.jsonl 回读，见 #30）；选举权重调整仍缺失
 第 3 步：SkillSpector 规则去活                      # ⬜ 缺失
 第 4 步：记忆修剪 -> 回顾报告                       # 🟡 回顾报告已可用，记忆修剪未做
 第 5 步：多渠道输出 + 成本报告                      # ⬜ 缺失

@@ -48,12 +48,12 @@ Bootstrap 写入 Agent Profile、种子经验、**使用指南（`~/.eto/memory/
 
 ```bash
 python eto/stitches/test.py
-# 期望输出: 36 PASS（未安装 mcp 包时走降级检查）
+# 期望输出: 52 PASS（未安装 mcp 包时走降级检查）
 pip install mcp && python eto/stitches/test.py
 # 装了 mcp 包后：含 "mcp peer score" 检查 —— 用 mock MCP server
 # 验证 provider="mcp" 的 peer 能拿到非空评分
 node --test tests/*.test.mjs
-# sentinel 预览注入防护测试
+# sentinel 预览注入防护 + 三体权重/MODE 路由 + 置信度学习（历史影响后续路由）测试
 ```
 
 `make setup`（即 `pip install -e eto/`）装完即带全部运行依赖（rich / pyyaml / mcp / langgraph），并注册 `eto-mesh`、`eto-bootstrap`、`eto-mcp-server` 三个命令。依赖声明的单一真源是 `eto/pyproject.toml`；根目录 `requirements.txt` 与其保持同步（供 `pip install -r` 场景使用），改依赖时两处一起改。
@@ -64,10 +64,10 @@ node --test tests/*.test.mjs
 
 | job | 验证内容 |
 |:----|:---------|
-| `demo` | 裸解释器（不装任何第三方包）直接跑 `eto/stitches/test.py`，断言退出码 0、PASS 数精确匹配（当前 36）、0 FAIL（Python 3.11 / 3.13 矩阵） |
+| `demo` | 裸解释器（不装任何第三方包）直接跑 `eto/stitches/test.py`，断言退出码 0、PASS 数精确匹配（当前 52）、0 FAIL（Python 3.11 / 3.13 矩阵） |
 | `clean install smoke` | 干净 venv 里 `pip install -e eto/`，检查 `eto-mesh` / `eto-bootstrap` 入口与导入，再跑一遍 demo 并同样断言 |
 | `no-langgraph degradation` | 安装去掉 langgraph 的 requirements，确认 langgraph 未安装、demo 仍全过（可选依赖降级路径的回归守卫） |
-| `sentinel preview injection` | Node 24 跑 `node --test tests/*.test.mjs`，验证安检预览不把捕获的 shell 输入喂给 shell |
+| `sentinel preview injection` | Node 24 跑 `node --test tests/*.test.mjs`：安检预览注入防护、三体权重/MODE 路由、置信度学习（「总是猜错」历史确实改变后续路由选择） |
 | `mcp peer scoring` | 安装含 mcp 的 requirements 后跑 demo（mock MCP server），断言 "mcp peer score" 检查存在且通过 |
 
 ### 一键安装全部依赖
@@ -198,9 +198,62 @@ rm -rf ~/.eto ~/.pi/etoprofiles ~/.pi/eto-config.json
 
 路由后端可配置 LLM 语义路由或关键词降级（`~/.pi/eto-config.json`）。
 
-> ⚠️ **路由未实现的部分**（设计文档 `docs/requirements.md` FR-A2.3/A2.4/A3 声称过）：
-> - **三体权重与 MODE（research/build/debate/full/direct）** — ⬜ 缺失。`RouteResult` 只有 `gewu/route/confidence/coordinator/layer` 五个字段，没有三体权重向量，也没有 MODE 映射（`grep -rn "恒纪元\|乱纪元" eto/` 无结果）。跟踪 issue：#26。
-> - **置信度学习** — ⬜ 缺失。路由置信度只作为 metric 展示（`eto.ts` :774 起），从不回读修正路由权重（FR-A2.4）。跟踪 issue：#30。
+> ✅ **路由声称过的部分已全部落地**（设计文档 `docs/requirements.md` FR-A2.3/A2.4/A3）：
+> - **三体权重与 MODE（research/build/debate/full/direct）** — ✅ 已实现（`eto/extensions/mode-routing.mjs`，见 #32）。
+> - **置信度学习** — ✅ 已实现（`eto/extensions/confidence-learning.mjs`，判据/配置/清空见下方「置信度学习」节，见 #30）。
+
+### 置信度学习（FR-A2.4）— 路由历史回读
+
+路由不再是「每次从零开始」：每次路由的预测与最终结果持久化到 `~/.eto/memory/routing-history.jsonl`，后续路由回读这份历史修正判断。
+
+**「路由猜对了」的可观测判据**（按下游路径，均有代码写入点，非人工判断）：
+
+| 下游路径 | 猜对 = | 猜错 = |
+|:---------|:-------|:-------|
+| plan + 工作流（`execute_workflow`） | `success: true`（全部步骤完成） | 任一步骤 `failed` |
+| plan + 降级路径（竞标/关键词） | 共识终审通过 | 共识终审要求修正 |
+| plan + 模糊指令 | — | 被指令澄清门拦截 |
+| consensus（MODE=debate） | 终审 `approved` | 终审 `revise` |
+| direct | 保守记猜对（无失败信号；不参与 MODE 降权） | — |
+
+**学习做什么**（默认保守，可解释）：
+
+- **MODE 降权**：同类任务（同 gewu）历史准确率低的 MODE 顺位下移到下一档（如 build 坏 → research），`full` 已是最高强度模式只记录不降级
+- **peer 降权**：协调员选举候选分乘 `max(成功率, maxPeerDownweight)`，低准确率 peer 降分但有下限
+- **每次调整带依据**：如 `MODE build 同类任务历史 5 次成功率 0%（低于阈值）→ 降权改选 research`（样本数/成功率/前后值都给出，非黑箱；路由分析注入与 `/routing-history` 命令可见）
+
+**配置**（`~/.pi/eto-config.json` 的 `router.learning` 段，缺省即默认值）：
+
+```json
+{
+  "router": {
+    "learning": {
+      "enabled": true,
+      "minSamples": 5,
+      "lowSuccessThreshold": 0.4,
+      "maxPeerDownweight": 0.5
+    }
+  }
+}
+```
+
+| 键 | 默认 | 含义 |
+|:--|:-----|:-----|
+| `enabled` | `true` | 总开关；`false` 完全关闭回读调整（仍记录） |
+| `minSamples` | `5` | 样本数低于此值不调整（防小样本误判） |
+| `lowSuccessThreshold` | `0.4` | 成功率低于此值才降权（默认保守） |
+| `maxPeerDownweight` | `0.5` | peer 降分下限（成功率 0 也只打对折，不归零） |
+
+**清空 / 回滚**：
+
+```
+/routing-reset          # Pi 扩展命令：删除 ~/.eto/memory/routing-history.jsonl，学习从零开始
+/routing-history        # 查看当前历史统计与哪些 MODE/peer 将被降权
+```
+
+也可直接 `rm ~/.eto/memory/routing-history.jsonl`。学习只读这一个文件，删掉即完全回滚；历史坏行会被容忍跳过，不影响路由主流程。
+
+**测试覆盖**：`tests/confidence-learning.test.mjs` 喂入一组「总是猜错」的历史后断言 MODE 选择确实变化（build → research）、派发计划不同、级联降级、清空后回到原路由；另有持久化/统计口径/配置归一化/可解释性共 20 个用例。
 
 ### 同侪共识 — 三阶段评审 ✅
 
@@ -539,6 +592,43 @@ Clarify Gate 已在 Pi 的路由中默认启用。Review / Feedback Gate 通过 
 
 Feedback 约束按 **agent 名**读写：`dispatch_spec` 构造时显式携带 `agent` 字段（`eto.ts` / `bidding/workflow.py`），`inject_constraints` 据此匹配——不再从 tool 名反推。spec 缺 `agent` 字段时跳过注入并在 stderr 留下 `constraints_skipped` 记录，不静默。
 
+### 治理 — 权限绑定与任务预算（FR-D3）
+
+秦始皇治理层的强制门，在**真实 dispatch 路径**上执行（`mcp_dispatch.dispatch_with_spec` 调工具之前），不配置不生效、配置即 fail-closed：
+
+| 门 | 配置 | 语义 |
+|:---|:-----|:-----|
+| **permit 权限绑定** | `~/.eto/permit.json` | agent 名 × 操作类型白名单；未列出的 agent/操作一律拒绝 |
+| **budget 任务预算** | `~/.eto/budget.json` | 按 `task_id` 限制工具调用次数（`max_tool_calls`），超限即停 |
+
+```jsonc
+// ~/.eto/permit.json — 谁能调什么
+{
+  "default": "deny",                       // 缺省 fail-closed
+  "agents": {
+    "coder": ["agent_execute", "eto_*"],   // 精确名 + 尾通配
+    "researcher": ["eto_*"],               // 只许 eto_* 工具
+    "auditor": ["*"]                       // 全放行
+  }
+}
+
+// ~/.eto/budget.json — 每任务预算帽
+{
+  "default": {"max_tool_calls": 25},       // 未单列任务的缺省帽
+  "tasks": {
+    "task-42": {"max_tool_calls": 3}       // 单任务收紧
+  }
+}
+```
+
+行为要点：
+
+- **拒绝可定位，不静默**：越权返回 `{"_error": true, "_governance": true, "code": "PERMIT_DENIED", "message": "…"}`，message 写明谁、想调什么工具、配置在哪、怎么修；同时 stderr 落一条 `governance_denied` JSON 日志。
+- **超预算即停**：超限返回 `BUDGET_EXCEEDED`（带 `已用 N/M` 用量）；LangGraph 工作流步骤标 `failed` 并带 `[BUDGET_EXCEEDED]` 前缀 error，`execute_workflow` 汇总 `budget_exceeded: true`，任务终止并如实上报，绝不静默截断。
+- **fail-closed**：配置文件损坏 / agents 字段类型不对 / 启用 permit 后 spec 缺 agent（身份不明）→ 一律拒绝并给出原因。
+- **向后兼容**：两个配置文件都不存在 → 未启用治理，行为与旧版一致。预算计数按 `task_id` 隔离（`~/.eto/budget_counters/`），spec 缺 `task_id` 时预算检查不适用。
+- `eto.ts` 的 `execPlan` 会为每个 plan 生成 `task_id`（`task-<时间戳>-<随机>`）并透传 dispatch 与工作流，预算按任务核算。
+
 ### context_block → agentmemory ✅
 
 每次执行前注入的 TealContext 优先从 agentmemory MCP 拉数据（跨 Agent 中央记忆），不可用时降级本地文件：
@@ -703,8 +793,8 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
 | dispatch_spec | `stitches/mcp_dispatch.py` | `dispatch_with_spec()` | ✅ |
 | 竞标协议 | `stitches/bidding/protocol.py` | `run_bidding()` (Phase A) | ✅ |
 | 共享记忆 | `stitches/memory/shared_memory.py` | KV + agentmemory context_block | ✅ |
-| 三体权重 / MODE 路由 | — | 设计见 requirements FR-A2.3/A3 | ⬜ 缺失（#26） |
-| 置信度学习 | — | 设计见 requirements FR-A2.4 | ⬜ 缺失（#30） |
+| 三体权重 / MODE 路由 | `extensions/mode-routing.mjs` | 权重/纪元/MODE/派发计划（FR-A2.3/A3） | ✅（#32） |
+| 置信度学习 | `extensions/confidence-learning.mjs` | 路由历史回读：MODE/peer 降权（FR-A2.4） | ✅（#30） |
 | 权限绑定与任务预算 | — | 设计见 requirements FR-D3 | ⬜ 缺失（#27） |
 | 集体回顾 + Rework/Iteration Loop | `stitches/reflection.py` | `eto-mesh reflect` / `run_rework` / `run_iteration` | ✅ |
 | Watch / Cron Loop | — | 仅意图检测，执行器需常驻监听 / 外部调度 | ⬜ 缺失 |
