@@ -454,4 +454,180 @@ p = (
 print(f"{OK_MARK if p else FAIL_MARK} wf ok-branch非空输出  状态语义完整")
 all_ok = all_ok and p
 
+# ── Governance 测试（issue #27: FR-D3 权限绑定 + 任务预算）──────────────
+# 全部隔离 HOME（permit.json / budget.json / 计数器都落在临时目录），
+# 不污染真实 ~/.eto。子进程 stitch 入口按惯例 stdin/stdout JSON 驱动。
+
+GOV_TAG = "gov-"
+
+def _gov_setup(tmp_home: str, permits: dict | None, budgets: dict | None) -> None:
+    """在隔离 HOME 下写 permit/budget 配置。传 None 表示不写该配置。"""
+    from pathlib import Path as _P
+    eto_dir = _P(tmp_home) / ".eto"
+    eto_dir.mkdir(parents=True, exist_ok=True)
+    import json as _json
+    if permits is not None:
+        (eto_dir / "permit.json").write_text(_json.dumps(permits), "utf-8")
+    if budgets is not None:
+        (eto_dir / "budget.json").write_text(_json.dumps(budgets), "utf-8")
+
+def _gov_run(tmp_home: str, spec: dict) -> subprocess.CompletedProcess:
+    """走真实 stitch 入口（mcp_dispatch.py 的 __main__），隔离 HOME。
+
+    拒绝路径在 import mcp 之前返回；放行路径在无 mcp 包环境会落到
+    stitch 入口的 try/except → {"_error": ...}，同样是生产行为。
+    """
+    env = {**os.environ, "HOME": tmp_home}
+    return subprocess.run(
+        [PY, str(ROOT / "mcp_dispatch.py")],
+        input=json.dumps({"fn": "dispatch_with_spec", "args": [json.dumps(spec)]}),
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=10, env=env,
+    )
+
+_SPEC_ALLOW = {"server_cmd": [], "tool": "agent_execute", "agent": "coder", "task": "t", "task_id": "t-1"}
+
+def _gov_out(r: subprocess.CompletedProcess) -> dict:
+    try:
+        return json.loads(r.stdout) if r.stdout.strip() else {}
+    except json.JSONDecodeError:
+        return {}
+
+# 1. 未配置 permit/budget → 放行（向后兼容：旧行为不变；无 mcp 包时
+#    落到 stitch 入口 _error，但绝不是治理拒绝）
+with tempfile.TemporaryDirectory() as tmp_home:
+    r = _gov_run(tmp_home, _SPEC_ALLOW)
+    out = _gov_out(r)
+    p = r.returncode == 0 and "_governance" not in out
+    print(f"{OK_MARK if p else FAIL_MARK} gov 未配置→放行      兼容旧行为")
+    all_ok = all_ok and p
+
+# 2. 越权操作被拒：researcher 只许 eto_*，调 agent_execute → PERMIT_DENIED，
+#    错误信息可定位（谁/想做什么/配置在哪），且 stderr 有拒绝日志
+with tempfile.TemporaryDirectory() as tmp_home:
+    _gov_setup(tmp_home, {"default": "deny", "agents": {"researcher": ["eto_*"]}}, None)
+    r = _gov_run(tmp_home, dict(_SPEC_ALLOW, agent="researcher"))
+    out = _gov_out(r)
+    p = (r.returncode == 0
+         and out.get("_governance") is True
+         and out.get("code") == "PERMIT_DENIED"
+         and "researcher" in out.get("message", "")
+         and "agent_execute" in out.get("message", "")
+         and "permit.json" in out.get("message", "")
+         and '"kind": "permit"' in r.stderr and '"code": "PERMIT_DENIED"' in r.stderr)
+    print(f"{OK_MARK if p else FAIL_MARK} gov 越权→拒绝+日志   PERMIT_DENIED")
+    all_ok = all_ok and p
+
+# 3. 白名单内操作放行（tool 匹配 eto_* 尾通配；无 mcp 包时降级 _error，
+#    但不能是治理拒绝）
+with tempfile.TemporaryDirectory() as tmp_home:
+    _gov_setup(tmp_home, {"default": "deny", "agents": {"researcher": ["eto_*"], "coder": ["agent_execute"]}}, None)
+    r = _gov_run(tmp_home, dict(_SPEC_ALLOW, agent="researcher", tool="eto_route"))
+    out = _gov_out(r)
+    p = r.returncode == 0 and "_governance" not in out
+    print(f"{OK_MARK if p else FAIL_MARK} gov 白名单→放行     通配匹配")
+    all_ok = all_ok and p
+
+# 4. 白名单外 agent（未列出）→ 拒绝（fail-closed，default=deny）
+with tempfile.TemporaryDirectory() as tmp_home:
+    _gov_setup(tmp_home, {"default": "deny", "agents": {"coder": ["agent_execute"]}}, None)
+    r = _gov_run(tmp_home, dict(_SPEC_ALLOW, agent="intruder"))
+    out = _gov_out(r)
+    p = out.get("code") == "PERMIT_DENIED" and "intruder" in out.get("message", "")
+    print(f"{OK_MARK if p else FAIL_MARK} gov 未列agent→拒绝   fail-closed")
+    all_ok = all_ok and p
+
+# 5. 已启用 permit 但 spec 缺 agent → 拒绝（身份不明不放行）
+with tempfile.TemporaryDirectory() as tmp_home:
+    _gov_setup(tmp_home, {"default": "deny", "agents": {"coder": ["agent_execute"]}}, None)
+    r = _gov_run(tmp_home, {"server_cmd": [], "tool": "agent_execute", "task": "t"})
+    out = _gov_out(r)
+    p = out.get("code") == "PERMIT_DENIED" and "agent" in out.get("message", "")
+    print(f"{OK_MARK if p else FAIL_MARK} gov 缺agent→拒绝    身份不明")
+    all_ok = all_ok and p
+
+# 6. permit 配置损坏 → 拒绝（fail-closed）且信息可定位
+with tempfile.TemporaryDirectory() as tmp_home:
+    from pathlib import Path as _P
+    (_P(tmp_home) / ".eto").mkdir(parents=True)
+    (_P(tmp_home) / ".eto" / "permit.json").write_text("{broken json", "utf-8")
+    r = _gov_run(tmp_home, _SPEC_ALLOW)
+    out = _gov_out(r)
+    p = out.get("code") == "PERMIT_DENIED" and "解析失败" in out.get("message", "")
+    print(f"{OK_MARK if p else FAIL_MARK} gov 坏配置→拒绝     fail-closed可定位")
+    all_ok = all_ok and p
+
+# 7. 预算超限被停：task 预算 max_tool_calls=2，第 3 次调用 → BUDGET_EXCEEDED，
+#    错误信息带用量与上限，stderr 有 budget_denied 日志
+with tempfile.TemporaryDirectory() as tmp_home:
+    _gov_setup(tmp_home, None, {"default": {"max_tool_calls": 2}})
+    outs = [_gov_out(_gov_run(tmp_home, _SPEC_ALLOW)) for _ in range(3)]
+    r = _gov_run(tmp_home, _SPEC_ALLOW)  # 再跑一次确认 stderr 稳定含拒绝日志
+    p = ("_governance" not in outs[0] and "_governance" not in outs[1]
+         and outs[2].get("code") == "BUDGET_EXCEEDED"
+         and "2/2" in outs[2].get("message", "")
+         and "t-1" in outs[2].get("message", "")
+         and '"kind": "budget"' in r.stderr and '"code": "BUDGET_EXCEEDED"' in r.stderr)
+    print(f"{OK_MARK if p else FAIL_MARK} gov 超预算→停止     BUDGET_EXCEEDED")
+    all_ok = all_ok and p
+
+# 8. 任务预算相互独立：t-1 耗尽不影响 t-2；default 帽对未列任务生效
+with tempfile.TemporaryDirectory() as tmp_home:
+    _gov_setup(tmp_home, None, {"tasks": {"t-1": {"max_tool_calls": 1}}})
+    _gov_run(tmp_home, _SPEC_ALLOW)  # t-1 用掉 1/1
+    r = _gov_run(tmp_home, dict(_SPEC_ALLOW, task_id="t-2"))
+    out = _gov_out(r)
+    p = "_governance" not in out  # t-2 走 default 帽（25），未被 t-1 影响
+    print(f"{OK_MARK if p else FAIL_MARK} gov 预算按任务隔离  互不串账")
+    all_ok = all_ok and p
+
+# 9. 工作流超预算终止（FR-D3.3）：run_step 带 task_id，预算耗尽后步骤
+#    必须标 failed + [BUDGET_EXCEEDED] 前缀 error，如实上报不静默
+with tempfile.TemporaryDirectory() as tmp_home:
+    _gov_setup(tmp_home, None, {"tasks": {"wf-budget": {"max_tool_calls": 1}}})
+    env = {**os.environ, "HOME": tmp_home}
+    wf_step_gov = json.dumps({"step": 1, "agent": "coder", "description": "编码", "system_prompt": "写代码", "skills": [], "mcp_tools": []})
+    r1 = subprocess.run([PY, str(ROOT / "bidding" / "workflow.py")],
+                        input=json.dumps({"fn": "run_step", "args": [wf_step_gov, "写一个hello world", "wf-budget"]}),
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env)
+    r2 = subprocess.run([PY, str(ROOT / "bidding" / "workflow.py")],
+                        input=json.dumps({"fn": "run_step", "args": [wf_step_gov, "再写一个", "wf-budget"]}),
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env)
+    s1, s2 = _gov_out(r1), _gov_out(r2)
+    p = (s1.get("status") == "failed"  # 无 provider 环境本就 failed（预算 1/1 已记账）
+         and "_governance" not in s1
+         and s2.get("status") == "failed"
+         and str(s2.get("error", "")).startswith("[BUDGET_EXCEEDED]"))
+    print(f"{OK_MARK if p else FAIL_MARK} gov 工作流超预算停  终止+如实上报")
+    all_ok = all_ok and p
+
+# 10. 治理门真的在 dispatch 路径上（源码断言，防回归）：
+#     dispatch_with_spec 必须先 _apply_governance 再 sync_call_mcp
+_dp_src = (ROOT / "mcp_dispatch.py").read_text(encoding="utf-8")
+_p = (_dp_src.index("_apply_governance") < _dp_src.index("sync_call_mcp")
+      and "def _apply_governance" in _dp_src)
+# eto.ts 侧：spec 带 task_id + 治理拒绝如实上报（防回归）
+_ts_src = (ROOT.parent / "extensions" / "eto.ts").read_text(encoding="utf-8")
+_p = _p and "spec.task_id = currentTaskId" in _ts_src and "_governance" in _ts_src
+print(f"{OK_MARK if _p else FAIL_MARK} gov dispatch路径接线  先治理后调用")
+all_ok = all_ok and _p
+
+# 11. 旧版 dispatch() 入口同样是治理门，不能当绕过后门：
+#     启用 permit 后不传 agent（旧调用方）必须被拒，而不是悄悄放行
+with tempfile.TemporaryDirectory() as tmp_home:
+    _gov_setup(tmp_home, {"default": "deny", "agents": {"coder": ["agent_execute"]}}, None)
+    env = {**os.environ, "HOME": tmp_home}
+    def _legacy(*args):
+        return subprocess.run([PY, str(ROOT / "mcp_dispatch.py")],
+                              input=json.dumps({"fn": "dispatch", "args": list(args)}),
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=10, env=env)
+    no_agent = _gov_out(_legacy("[]", "agent_execute", "t"))
+    with_agent = _gov_out(_legacy("[]", "agent_execute", "t", "coder"))
+    p = (no_agent.get("code") == "PERMIT_DENIED"
+         and "缺 agent" in no_agent.get("message", "")
+         and "_governance" not in with_agent)
+    print(f"{OK_MARK if p else FAIL_MARK} gov 旧dispatch不绕过   缺agent即拒")
+    all_ok = all_ok and p
+
 sys.exit(0 if all_ok else 1)

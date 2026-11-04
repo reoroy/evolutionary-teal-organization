@@ -137,6 +137,38 @@ Agent 之间通过 `~/.eto/shared_memory/` 共享上下文。自动写入：
 
 ---
 
+## 六·五、治理：权限绑定与任务预算
+
+dispatch 前的强制门（`mcp_dispatch.dispatch_with_spec`），配置不存在则不启用：
+
+**权限绑定** `~/.eto/permit.json`（agent × 操作白名单）：
+
+```json
+{
+  "default": "deny",
+  "agents": {
+    "coder": ["agent_execute", "eto_*"],
+    "researcher": ["eto_*"],
+    "auditor": ["*"]
+  }
+}
+```
+
+**任务预算** `~/.eto/budget.json`（按 `task_id` 限工具调用次数）：
+
+```json
+{
+  "default": {"max_tool_calls": 25},
+  "tasks": {"task-42": {"max_tool_calls": 3}}
+}
+```
+
+- 越权 / 超限：dispatch 直接拒绝，返回 `PERMIT_DENIED` / `BUDGET_EXCEEDED` 与可定位原因（谁、想调什么、配置在哪），stderr 同步落 `governance_denied` 日志。
+- 工作流超预算：步骤标 `failed`（error 带 `[BUDGET_EXCEEDED]` 前缀），`execute_workflow` 返回 `budget_exceeded: true`，任务停止并如实上报。
+- fail-closed：配置损坏或 spec 缺 `agent`（启用 permit 后）一律拒绝。
+
+---
+
 ## 七、Fable 5 风格 Agent Prompt
 
 所有 plan 路由的 Agent 注入以下 AGENT_PROMPT：
@@ -170,7 +202,7 @@ Tone:
 |:-----|:------|:------|
 | `/plan-eto` | 写 Reasonix plan | `docs/handoffs/reasonix/plan-*.md` |
 | `/code-eto` | 触发 Reasonix 实现 | Reasonix 完成回执 |
-| `/test-eto` | 跑测试 | `python eto/stitches/test.py` (17/17) |
+| `/test-eto` | 跑测试 | `python eto/stitches/test.py` (52/52) |
 | `/review-eto` | 审计 completion | 审计报告 |
 | `/release-eto` | 版本 bump + tag + push | 发布版本 |
 
