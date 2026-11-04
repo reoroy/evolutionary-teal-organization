@@ -945,6 +945,21 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // FR-E1.3：/reflect 手动触发集体回顾
+  pi.registerCommand("reflect", {
+    description: "手动触发集体回顾（FR-E1）",
+    handler: async (_args, ctx) => {
+      try {
+        const out = execSync(`python3 "${join(__dirname, "..", "..", "eto", "stitches", "reflection.py")}" reflect`, {
+          encoding: "utf-8", timeout: 30000,
+        });
+        ctx.ui.notify(out.trim(), "info");
+      } catch (e: any) {
+        ctx.ui.notify(`集体回顾失败: ${e?.message || e}`, "error");
+      }
+    },
+  });
+
   pi.on("before_agent_start", async (event, ctx) => {
     blockCounters.clear();  // 用户新消息 → 逃生门计数归零
     turnCounter++;
@@ -1015,6 +1030,27 @@ export default function (pi: ExtensionAPI) {
       routeLines.push(...route.learning.map(l => `- ${l}`));
     }
 
+    // FR-E2.1：通政司路由阶段检测循环意图（Rework/Iteration 可执行，Watch/Cron 报缺失）。
+    // 必须在 widgetLines/routeLines 声明之后 push，否则命中关键词的任务会 TDZ 崩溃。
+    let loopIntent: any = null;
+    try {
+      const li = await callStitchAsync("reflection", "detect_loop_intent", task);
+      if (li && !("_error" in li) && typeof li === "object" && (li as any).type) {
+        loopIntent = li;
+      }
+    } catch {}
+    if (loopIntent) {
+      const loopNote = loopIntent.note ? `（${loopIntent.note}）` : ``;
+      ctx.ui.notify(`🔄 Loop 意图: ${loopIntent.type} (maxRounds=${loopIntent.maxRounds})${loopNote}`, "info");
+      const loopLine = `Loop 意图: ${loopIntent.type} (round=0/${loopIntent.maxRounds === -1 ? "∞" : loopIntent.maxRounds})${loopNote}`;
+      widgetLines.push(`🔄 ${loopIntent.type}`);
+      routeLines.push(loopLine);
+      // Iteration 意图：路由约束里带上收敛要求（执行走 reflection.run_iteration）
+      if (loopIntent.type === "iteration") {
+        routeLines.push(`[Loop 约束] 多轮迭代执行，输出需可比较（收敛阈值 0.9），收敛即停`);
+      }
+    }
+
     if (route.route === "plan") {
       // 0. Clarify Gate — 模糊指令拦截
       const clarifyResult = await callStitchAsync("quality.clarify", "detect_vague", task);
@@ -1057,11 +1093,15 @@ export default function (pi: ExtensionAPI) {
       }
 
       if (workflowSteps && workflowSteps.length > 1) {
-        // task_id 透传工作流预算治理（issue #27 FR-D3）
-        const execResult = await callStitchAsync("bidding.workflow", "execute_workflow", JSON.stringify(wfResult), task, currentTaskId);
+        // task_id 透传工作流预算治理（issue #27 FR-D3）；rework 轮次来自 MODE dispatch
+        // （恒纪元 1 轮 / 乱纪元 3 轮，FR-A3.3），此前该配置只打印不下发。
+        const reworkRounds = typeof route.dispatch.reworkRounds === "number" ? route.dispatch.reworkRounds : 1;
+        const execResult = await callStitchAsync("bidding.workflow", "execute_workflow", JSON.stringify(wfResult), task, currentTaskId, reworkRounds);
         const exec = execResult as any;
         const stepLines = (exec?.step_results || []).map((r: any, i: number) => `  >> Step ${i+1} (${r.agent}): ${r.status}${r.status === "failed" && r.error ? ` — ${String(r.error).slice(0, 120)}` : ""}`).join("\n");
         const wfOk = exec?.success === true;
+        const reworkInfo = exec?.rework || {};
+        const roundsRun = typeof reworkInfo.rounds_run === "number" ? reworkInfo.rounds_run : 1;
         if (exec?.budget_exceeded) {
           ctx.ui.notify(`🛑 任务预算超限，已停止（${currentTaskId}）`, "warning");
           routeLines.push(`## ETO 工作流 | 协调员: ${coordinator} | 🛑 预算超限终止`);
@@ -1071,11 +1111,13 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.setWidget("eto-route", widgetLines);
           return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
         }
-        ctx.ui.notify(wfOk ? `✅ 工作流完成` : `⚠️ 工作流有失败步骤`, "info");
+        ctx.ui.notify(wfOk ? `✅ 工作流完成${roundsRun > 1 ? `（rework ${roundsRun} 轮）` : ""}` : `⚠️ 工作流有失败步骤`, "info");
         routeLines.push(`## ETO 工作流 | 协调员: ${coordinator} | ${wfOk ? "成功" : "失败"}`);
         routeLines.push(stepLines);
         for (const err of ((exec?.errors || []) as string[])) routeLines.push(`  !! ${err.slice(0, 200)}`);
+        if (roundsRun > 1) routeLines.push(`Rework: 已重跑 ${roundsRun} 轮（上限 ${reworkRounds}）`);
         widgetLines.push(wfOk ? `🔄 ${(wfResult as any).workflow || "workflow"} (${exec?.total_steps || 0} 步)` : `⚠️ ${(wfResult as any).workflow || "workflow"} 失败 (${(exec?.errors || []).length} 项错误)`);
+        if (roundsRun > 1) widgetLines.push(`♻️ rework ${roundsRun} 轮`);
         ctx.ui.setWidget("eto-route", widgetLines);
         recordOutcome(predId, wfOk ? "success" : "failure", `workflow:${(exec?.step_results || []).filter((r: any) => r.status === "failed").length} 步失败`);
         return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };

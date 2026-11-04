@@ -78,7 +78,7 @@ Pi CLI（入口 — 最后一步的执行器）
 | **Phase 1** | A2A 通信层奠基 | ProtoLink HTTP Transport + Registry 验证 | **🔶 名义完成，实现已替换**（自实现 MCP 通道，未接 ProtoLink） |
 | **Phase 2** | 编排与共识缝合 | Nexus + Aegean + Gravity AI 三件套 | **🟡 部分完成（全自实现）**——路由/选举/共识可用，未接任何外部库 |
 | **Phase 3** | 动态自组织 | 网状协作·弹性 Agent 池·自我修复 | ⬜ 缺失（Registry 心跳已有；其余未实现） |
-| **Phase 4** | 进化学习 | 集体回顾·策略调整·成本报告 | ⬜ 缺失（`grep -rn "collective_reflection" eto/` 无结果，见 #28） |
+| **Phase 4** | 进化学习 | 集体回顾·策略调整·成本报告 | **🟡 部分完成**——集体回顾 + 策略权重调整 + Rework/Iteration Loop 已实现（`eto/stitches/reflection.py`）；Watch/Cron 执行器与成本报告仍缺失 |
 | **Phase 5** | 理论引擎 | Active Inference · JEPA 集成 | ⬜ 缺失（研究阶段） |
 
 ---
@@ -133,19 +133,19 @@ Pi CLI（入口 — 最后一步的执行器）
 第 3 步：Parallel + Pipeline -> 分叉执行            # ⬜ 缺失
 第 4 步：Gravity AI 接 agentmemory -> 历史感知选举  # ⬜ 缺失（选举本身仅占位）
 第 5 步：超时检测 + 自动重路由                      # ⬜ 缺失
-第 6 步：知识蒸馏 + 集体回顾                        # ⬜ 缺失（见 #28）
+第 6 步：知识蒸馏 + 集体回顾                        # 🟡 集体回顾已可用（reflection.py）；知识蒸馏缺失
 ```
 
 ## Phase 4：进化学习
 
 > 系统从自己的执行历史中学习。见 [phase-4-evolution](phase-4-evolution.md)。
-> **2026-11-03 状态**：🔶 部分实现——路由历史回读已落地（FR-A2.4 置信度学习：MODE/peer 降权，`eto/extensions/confidence-learning.mjs`，见 #30）；失败聚类、规则去活、记忆修剪回顾、成本报告仍缺失。跟踪 issue：#27、#28。
+> **2026-11-04 状态**：🟡 部分完成——失败聚类、回顾报告、Rework/Iteration Loop 已实现（`eto/stitches/reflection.py`），策略权重调整有两条通路：竞标 weights（`protocol._apply_adjustment`）+ 路由历史回读（FR-A2.4 置信度学习，`eto/extensions/confidence-learning.mjs`，见 #30）。规则去活、记忆修剪、成本报告、Watch/Cron 执行器仍缺失。跟踪 issue：#28。
 
 ```
-第 1 步：agentmemory -> 聚类失败模式                # ⬜ 缺失
-第 2 步：策略调整 -> 修改选举/路由权重              # ✅ 路由部分已实现（routing-history.jsonl 回读，MODE/peer 降权，见 #30）；选举权重调整仍缺失
+第 1 步：agentmemory -> 聚类失败模式                # ✅ 可用（reflection.run_reflection）
+第 2 步：策略调整 -> 修改选举/路由权重              # 🟡 竞标 weights 回读生效（protocol._apply_adjustment）；路由部分已实现（routing-history.jsonl 回读，见 #30）；选举权重调整仍缺失
 第 3 步：SkillSpector 规则去活                      # ⬜ 缺失
-第 4 步：记忆修剪 -> 回顾报告                       # ⬜ 缺失
+第 4 步：记忆修剪 -> 回顾报告                       # 🟡 回顾报告已可用，记忆修剪未做
 第 5 步：多渠道输出 + 成本报告                      # ⬜ 缺失
 ```
 

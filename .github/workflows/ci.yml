@@ -18,8 +18,10 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   # 25 基线 + issue #16 反馈注入 3 项 + issue #14 上下文注入 3 项（main）
   # + issue #15 MCP peer 2 项（main #20）+ issue #13 工作流 3 项（main #22）
-  # + issue #29 选举 Raft 语义 5 项（main #34）+ issue #27 治理 11 项（本分支）
-  EXPECTED_PASS: "52"
+  # + issue #29 选举 Raft 语义 5 项（main #34）+ issue #27 治理 11 项（main #33）
+  # + issue #30 置信度学习（main #35）+ issue #28 集体回顾/Loop 31 项（本分支：
+  #   LoopContext 3 + 意图检测 6 + Rework 6 + Iteration 5 + 集体回顾 9 + eto.ts 接线 2）
+  EXPECTED_PASS: "83"
 
 jobs:
   # Job 1: the demo must pass on a bare interpreter (no third-party packages,

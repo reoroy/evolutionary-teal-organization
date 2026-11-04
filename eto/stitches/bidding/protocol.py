@@ -2,6 +2,39 @@
 import json, sys, time
 from pathlib import Path
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
+# ── 集体回顾权重调整（FR-E1.4/E1.5 的下游消费）──
+# reflection.py 把策略调整写入 shared_memory（collective_reflection:weights），
+# 竞标降级路径读它：weights 查表值被回顾调整覆盖。读失败 → 不调整（竞标行为不变）。
+
+def _reflection_adjustments() -> dict:
+    """读取集体回顾产出的策略权重调整 {agent: {task_type: new_weight}}"""
+    try:
+        root = str(_REPO_ROOT)
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from eto.stitches.memory.shared_memory import read as _read
+        entry = _read("collective_reflection:weights") or {}
+        adj = entry.get("adjustments", {})
+        return adj if isinstance(adj, dict) else {}
+    except Exception:
+        return {}
+
+def _apply_adjustment(profile: dict) -> dict:
+    """把回顾调整应用到 profile 的 weights 副本上（不改入参、不改文件）"""
+    adj = _reflection_adjustments()
+    agent_adj = adj.get(profile.get("name", ""), {})
+    if not agent_adj or not isinstance(agent_adj, dict):
+        return profile
+    weights = profile.get("weights", {})
+    if not isinstance(weights, dict):
+        return profile
+    p = dict(profile)
+    p["weights"] = {**weights, **{k: v for k, v in agent_adj.items() if isinstance(v, (int, float))}}
+    return p
+
+
 # ── LLM 调用（复用 stitch 的 provider 机制）──
 OLLAMA_URL = "http://localhost:11434"
 MODEL = "qwen2.5-coder:7b"
@@ -39,6 +72,8 @@ def run_bidding(task_spec_json: str, profiles_json: str) -> str:
     """
     task_spec = json.loads(task_spec_json)
     profiles = json.loads(profiles_json)
+    # 集体回顾的策略权重调整先行应用（LLM 不可用的 weights 降级路径随之生效）
+    profiles = [_apply_adjustment(p) if isinstance(p, dict) else p for p in profiles]
     task_title = task_spec.get("title", "")
     task_desc = task_spec.get("description", "")
     task_type = task_spec.get("type", "code")

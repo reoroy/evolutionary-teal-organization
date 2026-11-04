@@ -454,6 +454,349 @@ p = (
 print(f"{OK_MARK if p else FAIL_MARK} wf ok-branch非空输出  状态语义完整")
 all_ok = all_ok and p
 
+# ── 集体回顾 + Loop 系统（issue #28: FR-E1 / FR-E2）────────────
+# 核心语义：每个实现的 Loop 都必须真的「再跑一轮」，不是只算不跑。
+# Rework：失败 → 收集失败原因 → 带上一轮失败信息重跑（execute_round 注入 mock，
+# 断言第二轮收到的 feedback 包含第一轮失败原因 —— 真的重跑了一轮）。
+# Iteration：多轮结果可比较、收敛即停。集体回顾：触发条件 + 权重调整闭环。
+
+# 1. LoopContext 接口（FR-E2.3/E2.4）：type/round/maxRounds/artifacts，-1 无限
+r = run(ROOT / "reflection.py", {"fn": "loop_context", "args": ["rework", 1, "修 bug"]})
+p = ok(r) and '"type": "rework"' in r.stdout and '"round": 0' in r.stdout and '"maxRounds": 1' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} loop ctx接口        type/round/maxRounds")
+all_ok = all_ok and p
+
+r = run(ROOT / "reflection.py", {"fn": "loop_advance", "args": [json.dumps({"type": "iteration", "round": 2, "maxRounds": 3, "task": "t", "artifacts": []})]})
+p = ok(r) and '"round": 3' in r.stdout and '"should_continue": false' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} loop advance        第3轮后停")
+all_ok = all_ok and p
+
+r = run(ROOT / "reflection.py", {"fn": "loop_advance", "args": [json.dumps({"type": "watch", "round": 5, "maxRounds": -1, "task": "t", "artifacts": []})]})
+p = ok(r) and '"should_continue": true' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} loop 无限循环      maxRounds=-1 继续")
+all_ok = all_ok and p
+
+# 2. 循环意图检测（FR-E2.1）：rework/iteration/watch/cron 四类关键词
+for _kw, _type in [("失败了自动重试一轮", "rework"), ("反复执行直到收敛", "iteration"), ("盯着这个文件有变化时通知我", "watch"), ("每天定时生成简报", "cron")]:
+    r = run(ROOT / "reflection.py", {"fn": "detect_loop_intent", "args": [_kw]})
+    p = ok(r) and f'"type": "{_type}"' in r.stdout
+    print(f"{OK_MARK if p else FAIL_MARK} loop intent {_type:10s} 关键词命中")
+    all_ok = all_ok and p
+r = run(ROOT / "reflection.py", {"fn": "detect_loop_intent", "args": ["查一下天气"]})
+p = ok(r) and r.stdout.strip() == "null"
+print(f"{OK_MARK if p else FAIL_MARK} loop intent none     无意图返回null")
+all_ok = all_ok and p
+# Watch/Cron 必须明确报「未实现」，不许静默装作支持
+r = run(ROOT / "reflection.py", {"fn": "detect_loop_intent", "args": ["每天定时生成简报"]})
+p = ok(r) and "未实现" in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} loop watch/cron      标注未实现")
+all_ok = all_ok and p
+
+# 3. Rework Loop（FR-E2.2）：真的再跑一轮 + 上一轮失败信息进入下一轮
+_calls = []
+def _mock_exec_round(task, steps, feedback):
+    _calls.append(feedback)
+    if not feedback:
+        return [{"agent": "coder", "status": "failed", "output": "", "error": "connection refused by provider", "retries": 0}]
+    return [{"agent": "coder", "status": "ok", "output": f"done with feedback: {feedback}", "retries": 0}]
+sys.path.insert(0, str(ROOT.parent.parent))
+from eto.stitches.bidding.workflow import rework_loop, failure_feedback
+_rw = rework_loop("写一个爬虫", [{"step": 1, "agent": "coder", "description": "编码"}], 1, execute_round=_mock_exec_round)
+p = (_rw["rounds_run"] == 2 and _rw["success"] is True
+     and _rw["rounds"][0]["success"] is False
+     and "connection refused" in _rw["rounds"][1]["rework_feedback"]
+     and len(_calls) == 2 and "connection refused" in _calls[1])
+print(f"{OK_MARK if p else FAIL_MARK} loop rework         失败带因重跑一轮")
+all_ok = all_ok and p
+
+# rework 与既有 step 级 retry 协调：retry 消耗步骤的 max_retries，rework 只在整轮失败后介入。
+# 源码断言（防回归）：rework_loop 的实现复用 _make_node_fn/_rework_execute_round，不另起执行体系。
+_wf_src2 = (ROOT / "bidding" / "workflow.py").read_text(encoding="utf-8")
+p = ("def _rework_execute_round" in _wf_src2
+     and "_make_node_fn(step)(state)" in _wf_src2
+     and "rework_feedback" in _wf_src2)
+print(f"{OK_MARK if p else FAIL_MARK} loop rework复用      不另起执行体系")
+all_ok = all_ok and p
+
+# failure_feedback：收集所有失败步骤的原因
+_ff = failure_feedback([
+    {"agent": "coder", "status": "failed", "output": "", "error": "err-a", "retries": 0},
+    {"agent": "auditor", "status": "ok", "output": "x", "retries": 0},
+    {"agent": "coder", "status": "failed", "output": "", "error": "err-b", "retries": 0},
+])
+p = "err-a" in _ff and "err-b" in _ff and "auditor" not in _ff
+print(f"{OK_MARK if p else FAIL_MARK} rework feedback     聚合失败原因")
+all_ok = all_ok and p
+
+# 4. Iteration Loop（FR-E2）：多轮结果可比较，收敛即停
+_iter_calls = {"n": 0}
+def _mock_iter_round(round_no):
+    _iter_calls["n"] += 1
+    if round_no == 1:
+        return "第一轮草稿：方向未定，需要补充数据"
+    return "最终结论：市场规模 100 亿，CAGR 5%，头部三家占 60%"
+from eto.stitches.reflection import iteration_loop, compare_rounds, similarity
+_it = iteration_loop("市场分析", max_rounds=3, threshold=0.9, execute_round=_mock_iter_round)
+p = (_it["rounds"] == 3 and _it["converged"] is True and _iter_calls["n"] == 3
+     and len(_it["similarities"]) == 2 and _it["similarities"][0] < 0.9 and _it["similarities"][-1] >= 0.9)
+print(f"{OK_MARK if p else FAIL_MARK} loop iteration      收敛即停可比")
+all_ok = all_ok and p
+
+# 不收敛场景：跑满 max_rounds，converged=False
+_iter_calls2 = {"n": 0}
+def _mock_iter_diverge(round_no):
+    _iter_calls2["n"] += 1
+    return f"第 {round_no} 轮完全不同的结果 {round_no * 1000}"
+_it2 = iteration_loop("发散任务", max_rounds=3, threshold=0.95, execute_round=_mock_iter_diverge)
+p = (_it2["rounds"] == 3 and _it2["converged"] is False and _iter_calls2["n"] == 3)
+print(f"{OK_MARK if p else FAIL_MARK} loop iteration发散   跑满上限不停")
+all_ok = all_ok and p
+
+# compare_rounds/similarity 纯函数语义
+p = similarity("abc", "abc") == 1.0 and similarity("abc", "xyz") < 0.5 and compare_rounds(["a", "a", "b"]) == [1.0, round(similarity("a", "b"), 3)]
+print(f"{OK_MARK if p else FAIL_MARK} iteration similarity 相似度计算")
+all_ok = all_ok and p
+
+# 失败轮不算收敛：每轮都返回同一条错误时相似度=1.0，据此判收敛是假信号
+# （修复前：无 provider 环境 Iteration 第一对轮次就报 converged=True）
+def _mock_iter_failed(round_no):
+    return {"status": "failed", "output": "", "error": "provider 不可用"}
+_it_fail = iteration_loop("失败任务", max_rounds=3, threshold=0.9, execute_round=_mock_iter_failed)
+p = (_it_fail["rounds"] == 3 and _it_fail["converged"] is False
+     and _it_fail["failed_rounds"] == [1, 2, 3]
+     and all(r["status"] == "failed" for r in _it_fail["round_results"]))
+print(f"{OK_MARK if p else FAIL_MARK} iteration失败不收敛 同错误≠收敛")
+all_ok = all_ok and p
+
+# 5. Iteration 真实执行链路（run_iteration 走 run_step dispatch，无 provider 环境 → 失败轮也照跑并落账）
+with tempfile.TemporaryDirectory() as tmp_home:
+    env = {**os.environ, "HOME": tmp_home}
+    r = subprocess.run(
+        [PY, "-c",
+         "import sys, json; sys.path.insert(0, %r);" % str(ROOT.parent.parent) +
+         "from eto.stitches.reflection import run_iteration; "
+         "res = json.loads(run_iteration('反复执行测试任务', max_rounds=2, threshold=0.99)); "
+         "print(json.dumps({'rounds': res['rounds'], 'converged': res['converged'], "
+         "'has_outputs': len(res['outputs']) == res['rounds']}))" % ()],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env,
+    )
+    try:
+        _it3 = json.loads(r.stdout) if r.stdout.strip() else {}
+    except json.JSONDecodeError:
+        _it3 = {}
+    # 无 provider 环境：每轮都是同一条失败 → 相似度 1.0 但失败轮不算收敛。
+    # 重点断言「真的跑满可跑的轮次」且没有把失败当收敛。
+    p = (r.returncode == 0 and _it3.get("rounds") == 2 and _it3.get("has_outputs") is True
+         and _it3.get("converged") is False)
+    print(f"{OK_MARK if p else FAIL_MARK} iteration真实链路   多轮执行落账")
+    all_ok = all_ok and p
+
+# 6. Rework 真实执行链路（run_rework 走 run_step dispatch + 轮次落账 shared_memory）
+with tempfile.TemporaryDirectory() as tmp_home:
+    env = {**os.environ, "HOME": tmp_home}
+    _steps = json.dumps([{"step": 1, "agent": "coder", "description": "编码", "system_prompt": "写代码", "skills": [], "mcp_tools": []}])
+    r = subprocess.run(
+        [PY, "-c",
+         "import sys, json; sys.path.insert(0, %r);" % str(ROOT.parent.parent) +
+         "from eto.stitches.bidding.workflow import run_rework; "
+         "res = json.loads(run_rework('写一个hello world', %r, 1)); "
+         "print(json.dumps({'rounds_run': res['rounds_run'], 'success': res['success'], "
+         "'loop_type': res['loop']['type']}))" % _steps],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env,
+    )
+    try:
+        _rw2 = json.loads(r.stdout) if r.stdout.strip() else {}
+    except json.JSONDecodeError:
+        _rw2 = {}
+    p = r.returncode == 0 and _rw2.get("rounds_run") == 2 and _rw2.get("loop_type") == "rework"
+    print(f"{OK_MARK if p else FAIL_MARK} rework真实链路     失败重跑+落账")
+    all_ok = all_ok and p
+    # 落账进 shared_memory（集体回顾的数据源）：agent 必须是真实失败的 agent，
+    # 不是 loop 类型 —— 否则回顾的权重调整按 profiles.json 查表永远匹配不上。
+    r2 = subprocess.run(
+        [PY, "-c",
+         "import sys, json; sys.path.insert(0, %r);" % str(ROOT.parent.parent) +
+         "from eto.stitches.memory.shared_memory import read; "
+         "h = read('collective_reflection:history') or {}; "
+         "print(json.dumps({'total': h.get('total', 0), 'rounds': len(h.get('rounds', [])), "
+         "'agent': (h.get('rounds') or [{}])[-1].get('agent'), "
+         "'detail': (h.get('rounds') or [{}])[-1].get('detail')}))"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, env=env,
+    )
+    try:
+        _hist = json.loads(r2.stdout) if r2.stdout.strip() else {}
+    except json.JSONDecodeError:
+        _hist = {}
+    p = (r2.returncode == 0 and _hist.get("total", 0) >= 1
+         and _hist.get("agent") == "coder"
+         and "loop=rework" in (_hist.get("detail") or ""))
+    print(f"{OK_MARK if p else FAIL_MARK} rework轮次落账     真实agent+loop标注")
+    all_ok = all_ok and p
+
+# 6b. 生产主路径落账：eto.ts 的 plan 分支每次走 execute_workflow，它必须把轮次记进
+#     集体回顾历史（否则回顾只看得到手动 run_rework/run_iteration 的样本）。
+#     execute_workflow 需要 langgraph 建图，而 demo job 刻意不装 langgraph，
+#     所以这里直接验证落账函数（execute_workflow 在成功/失败后都调它）+ 源码接线。
+with tempfile.TemporaryDirectory() as tmp_home:
+    env = {**os.environ, "HOME": tmp_home}
+    r = subprocess.run(
+        [PY, "-c",
+         "import sys, json; sys.path.insert(0, %r);" % str(ROOT.parent.parent) +
+         "from eto.stitches.bidding.workflow import _record_workflow_round; "
+         "from eto.stitches.memory.shared_memory import read; "
+         "_record_workflow_round('审查代码', False, "
+         "[{'agent': 'researcher', 'status': 'ok'}, {'agent': 'auditor', 'status': 'failed'}], "
+         "['step 2 (auditor): boom'], 2); "
+         "h = read('collective_reflection:history') or {}; "
+         "print(json.dumps({'total': h.get('total', 0), 'success': (h.get('rounds') or [{}])[-1].get('success'), "
+         "'agent': (h.get('rounds') or [{}])[-1].get('agent'), "
+         "'detail': (h.get('rounds') or [{}])[-1].get('detail')}))"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=90, env=env,
+    )
+    try:
+        _prod = json.loads(r.stdout) if r.stdout.strip() else {}
+    except json.JSONDecodeError:
+        _prod = {}
+    _wf_prod_src = (ROOT / "bidding" / "workflow.py").read_text(encoding="utf-8")
+    p = (r.returncode == 0 and _prod.get("total") == 1
+         and _prod.get("success") is False and _prod.get("agent") == "auditor"
+         and "boom" in (_prod.get("detail") or "")
+         and "_record_workflow_round(task, success, final[\"step_results\"]" in _wf_prod_src)
+    print(f"{OK_MARK if p else FAIL_MARK} workflow轮次落账   生产路径进回顾")
+    all_ok = all_ok and p
+
+# 7. 集体回顾触发条件（FR-E1.1/E1.2）：每 N 轮 / 最近 5 轮失败 > 3
+_h10 = json.dumps({"total": 10, "rounds": [{"success": True}] * 10})
+r = run(ROOT / "reflection.py", {"fn": "should_reflect", "args": [_h10]})
+p = ok(r) and '"reflect": true' in r.stdout and "每 10 轮" in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} reflect触发:每N轮   total=10命中")
+all_ok = all_ok and p
+
+_hfail = json.dumps({"total": 3, "rounds": [{"success": False}] * 4 + [{"success": True}]})
+r = run(ROOT / "reflection.py", {"fn": "should_reflect", "args": [_hfail]})
+p = ok(r) and '"reflect": true' in r.stdout and "失败 4" in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} reflect触发:高失败  5轮4败命中")
+all_ok = all_ok and p
+
+_hok = json.dumps({"total": 7, "rounds": [{"success": True}] * 7})
+r = run(ROOT / "reflection.py", {"fn": "should_reflect", "args": [_hok]})
+p = ok(r) and '"reflect": false' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} reflect不触发       条件未达")
+all_ok = all_ok and p
+
+# 8. 集体回顾分析（FR-E1.4/E1.5）：聚类失败 → 识别模式 → 调整权重 → 报告（隔离 HOME）
+with tempfile.TemporaryDirectory() as tmp_home:
+    env = {**os.environ, "HOME": tmp_home}
+    _hist_fail = json.dumps({"total": 6, "rounds": [
+        {"task": "t1", "success": False, "agent": "coder", "detail": "connection refused 111"},
+        {"task": "t2", "success": False, "agent": "coder", "detail": "connection refused 222"},
+        {"task": "t3", "success": False, "agent": "coder", "detail": "timeout 333"},
+        {"task": "t4", "success": False, "agent": "coder", "detail": "connection refused 444"},
+        {"task": "t5", "success": True, "agent": "researcher", "detail": ""},
+        {"task": "t6", "success": True, "agent": "researcher", "detail": ""},
+    ]})
+    r = subprocess.run(
+        [PY, "-c",
+         "import sys, json; sys.path.insert(0, %r);" % str(ROOT.parent.parent) +
+         "from eto.stitches.reflection import run_reflection, format_report; "
+         "report = json.loads(run_reflection(%r)); "
+         "text = format_report(report); "
+         "print(json.dumps({'failure_count': report['failure_count'], "
+         "'has_coder_finding': any(f['agent'] == 'coder' and f['failure_count'] == 4 for f in report['findings']), "
+         "'has_adjustment': 'coder' in report['adjustments'], "
+         "'adjust_val': report['adjustments'].get('coder', {}).get('code'), "
+         "'report_text_ok': '集体回顾报告' in text and '建议' in text}))" % _hist_fail],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, env=env,
+    )
+    try:
+        _rep = json.loads(r.stdout) if r.stdout.strip() else {}
+    except json.JSONDecodeError:
+        _rep = {}
+    p = (r.returncode == 0 and _rep.get("failure_count") == 4
+         and _rep.get("has_coder_finding") is True
+         and _rep.get("has_adjustment") is True
+         and _rep.get("adjust_val") == 0.85
+         and _rep.get("report_text_ok") is True)
+    print(f"{OK_MARK if p else FAIL_MARK} reflect分析        聚类+调权+报告")
+    all_ok = all_ok and p
+
+    # 闭环：回顾调整写入 shared_memory 后，竞标 weights 降级路径用它（protocol._apply_adjustment）
+    r2 = subprocess.run(
+        [PY, "-c",
+         "import sys, json; sys.path.insert(0, %r);" % str(ROOT.parent.parent) +
+         "from eto.stitches.bidding.protocol import _apply_adjustment; "
+         "p = {'name': 'coder', 'weights': {'code': 0.95, 'research': 0.2}}; "
+         "adjusted = _apply_adjustment(p); "
+         "print(json.dumps({'code': adjusted['weights']['code'], 'unchanged': p['weights']['code']}))"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, env=env,
+    )
+    try:
+        _adj = json.loads(r2.stdout) if r2.stdout.strip() else {}
+    except json.JSONDecodeError:
+        _adj = {}
+    p = r2.returncode == 0 and _adj.get("code") == 0.85 and _adj.get("unchanged") == 0.95
+    print(f"{OK_MARK if p else FAIL_MARK} reflect权重闭环    竞标读调整")
+    all_ok = all_ok and p
+
+# 9. 自动触发 + 手动 CLI（FR-E1.1/E1.3）
+with tempfile.TemporaryDirectory() as tmp_home:
+    env = {**os.environ, "HOME": tmp_home}
+    # maybe_reflect：落账到第 10 轮时自动触发回顾
+    r = subprocess.run(
+        [PY, "-c",
+         "import sys, json; sys.path.insert(0, %r);" % str(ROOT.parent.parent) +
+         "from eto.stitches.reflection import maybe_reflect; "
+         "res = json.loads(maybe_reflect()); "
+         "print(json.dumps({'triggered': res['triggered'], 'reason': res['reason']}))"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10, env=env,
+    )
+    try:
+        _mr = json.loads(r.stdout) if r.stdout.strip() else {}
+    except json.JSONDecodeError:
+        _mr = {}
+    p = r.returncode == 0 and _mr.get("triggered") is False
+    print(f"{OK_MARK if p else FAIL_MARK} reflect自动触发    未达不触发")
+    all_ok = all_ok and p
+
+# 手动 CLI：python3 eto/stitches/reflection.py reflect 输出人类可读报告（FR-E1.3）
+with tempfile.TemporaryDirectory() as tmp_home:
+    env = {**os.environ, "HOME": tmp_home}
+    r = subprocess.run([PY, str(ROOT / "reflection.py"), "reflect"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env)
+    p = r.returncode == 0 and "集体回顾报告" in r.stdout
+    print(f"{OK_MARK if p else FAIL_MARK} reflect CLI         手动触发输出报告")
+    all_ok = all_ok and p
+
+# eto-mesh reflect 子命令存在（cli.py 源码断言，无需装包即可验证）
+_cli_src = (ROOT.parent / "cli.py").read_text(encoding="utf-8")
+p = "reflect" in _cli_src and "cmd_reflect" in _cli_src
+print(f"{OK_MARK if p else FAIL_MARK} eto-mesh reflect    CLI子命令注册")
+all_ok = all_ok and p
+
+# eto.ts 集成断言（防回归）：/reflect 命令 + Loop 意图检测真的进了路由
+ts_src2 = (ROOT.parent / "extensions" / "eto.ts").read_text(encoding="utf-8")
+p = ('pi.registerCommand("reflect"' in ts_src2
+     and 'detect_loop_intent' in ts_src2
+     and "Loop 意图" in ts_src2)
+print(f"{OK_MARK if p else FAIL_MARK} eto.ts reflect/loop  命令+意图接线")
+all_ok = all_ok and p
+
+# 顺序断言：Loop 意图 push 到 widgetLines/routeLines 必须在 const 声明之后。
+# 修复前该块在声明之前，任何含「重试/迭代/定时」等关键词的任务都会 TDZ ReferenceError，
+# 整个 before_agent_start 抛错、路由失效。
+_ts_decl = ts_src2.index("const widgetLines = [")
+_ts_loop = ts_src2.index("detect_loop_intent")
+_ts_push = ts_src2.index("widgetLines.push(`🔄 ${loopIntent.type}`)")
+p = _ts_decl < _ts_loop < _ts_push
+print(f"{OK_MARK if p else FAIL_MARK} eto.ts loop非TDZ      声明先于push")
+all_ok = all_ok and p
+
+# MODE dispatch 的 reworkRounds 必须真的下发给 execute_workflow（此前只打印不下发）。
+# task_id（FR-D3 预算治理）占第 3 位，rework 轮次在其后，两个都要传。
+p = ('"execute_workflow", JSON.stringify(wfResult), task, currentTaskId, reworkRounds' in ts_src2
+     and "route.dispatch.reworkRounds" in ts_src2)
+print(f"{OK_MARK if p else FAIL_MARK} eto.ts rework下发     MODE轮次进执行")
+all_ok = all_ok and p
 # ── Governance 测试（issue #27: FR-D3 权限绑定 + 任务预算）──────────────
 # 全部隔离 HOME（permit.json / budget.json / 计数器都落在临时目录），
 # 不污染真实 ~/.eto。子进程 stitch 入口按惯例 stdin/stdout JSON 驱动。
