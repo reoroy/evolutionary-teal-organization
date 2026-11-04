@@ -459,14 +459,37 @@ Agent 不再被硬分配，而是收到任务后自评竞标：
      → execute_workflow()
        ├── 每步调 dispatch_with_spec → mcp_server 的 agent_execute（真实执行入口）
        ├── 空输出 / _error / status=failed → 步骤标 failed 并暴露 error（不吞掉）
-       ├── 条件边（auditor 失败 → 重试）
+       ├── 条件边（auditor 失败 → 轮内单步重试）
        ├── 上一步输出注入下一步上下文
+       ├── 整轮失败 → Rework Loop 带失败原因重跑（见下一节）
        └── 结果写 shared_memory
 ```
 
 依赖：`langgraph>=0.2.0`；`agent_execute` 路由到 `~/.pi/eto-config.json` 配置的 peer provider（ollama/deepseek/claude/mcp），无可用 provider 时工作流明确报 failed。
 
-> ⚠️ 工作流仅覆盖「任务拆步执行」这一种拓扑。设计文档里的四种 Loop（Rework / Iteration / Watch / Cron，`docs/eto-feature-list.md` ETO-060~063）—— ⬜ 缺失，代码里没有 LoopContext 或任何循环意图检测（`grep -rn "collective_reflection\|Rework\|Watch Loop" eto/` 无结果）。跟踪 issue：#28。
+### 集体回顾 + Loop 系统（FR-E1/FR-E2）✅（Rework/Iteration 可用，Watch/Cron 缺失）
+
+`eto/stitches/reflection.py` 实现集体回顾与 Loop 的统一基座，Rework 在 `bidding/workflow.py` 与既有 step 级 retry 协调（不另起一套）：
+
+```
+LoopContext（统一接口 type/round/maxRounds/artifacts，maxRounds=-1 无限）
+detect_loop_intent（FR-E2.1）→ 路由阶段识别 rework/iteration/watch/cron 意图
+Rework Loop（FR-E2.2）  → 整轮失败 → failure_feedback 收集原因 → 带因重跑
+                          （execute_workflow / run_rework；与图内条件边的
+                            单步 retry 分层：retry 消耗 max_retries，
+                            rework 消耗 rework_rounds）
+Iteration Loop（FR-E2.2）→ 同任务多轮执行 → difflib 相邻轮相似度 → 收敛即停
+                          （run_iteration，输出可比：similarities 序列）
+集体回顾（FR-E1）        → record_round 落账 → 每 10 轮 / 最近 5 轮失败 > 3
+                          自动触发 → 聚类失败 → 识别模式 → 调整策略权重
+                          （写入 shared_memory，竞标 weights 降级路径消费）
+                          → 回顾报告（发现 + 调整 + 建议）
+手动触发：eto-mesh reflect / /reflect（Pi） / python3 eto/stitches/reflection.py reflect
+```
+
+验证命令：`python3 eto/stitches/test.py`（Loop/回顾 28 项检查，含「真的再跑一轮」断言——Rework 第二轮收到的注入里含第一轮失败原因，Iteration 收敛即停且相似度序列可比）。
+
+> ⚠️ Watch / Cron 两种 Loop **仅有意图检测，执行器缺失**（`grep -n "未实现" eto/stitches/reflection.py` 可见标注）：Watch 需常驻文件/PR 监听进程，Cron 需外部调度器（launchd/cron/CI schedule），不在本轮范围。检测到这两类意图时系统明确报「未实现」而非静默装作支持。跟踪 issue：#28。
 
 ### Fable 模式 — 复杂任务工程方法论 ✅
 

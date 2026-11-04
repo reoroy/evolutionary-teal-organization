@@ -232,6 +232,9 @@ class WorkflowState(TypedDict):
     current_step: int
     overall_status: str
     error: str
+    # Rework Loop（FR-E2.2）：当前重跑轮次 + 上一轮失败原因
+    rework_round: int
+    rework_feedback: str
 
 def _is_complex_task(task: str) -> bool:
     """与 eto.ts isComplexTask() 保持一致的复杂度检测"""
@@ -274,6 +277,13 @@ def _make_node_fn(step: dict):
             last = prev[-1]
             out = (last.get("output") or "")[:80]
             sp = f"[上一步 {last.get('agent','?')}]: {out}\n\n{sp}"
+
+        # Rework Loop（FR-E2.2）：上一轮的失败原因注入本轮提示词。
+        # 与 step 级 retry 协调：retry 在同一轮内重试单步（_make_router 条件边），
+        # rework 在整轮失败后带着失败原因重跑整个任务 —— 两层不重复计数。
+        rework_feedback = state.get("rework_feedback", "")
+        if rework_feedback:
+            sp = f"[上一轮失败原因]\n{rework_feedback[:500]}\n请针对以上失败调整做法，不要原样重跑。\n\n{sp}"
 
         try:
             sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
@@ -343,11 +353,91 @@ def build_graph(workflow_design: dict) -> "StateGraph":
             graph.add_edge(nid, END)
     return graph.compile()
 
-def execute_workflow(workflow_design_json: str, task: str) -> str:
+# ── Rework Loop（FR-E2.2）：任务失败后收集失败原因，带因重跑一轮 ──────────────
+# 协调关系：_make_router 的条件边是「轮内单步 retry」（max_retries），
+# rework 是「整轮失败后的任务级重跑」。rework 复用 _make_node_fn 执行单步，
+# 复用 failure_feedback 收集失败原因，不另起执行体系。
+
+def failure_feedback(step_results: list) -> str:
+    """收集一轮里所有失败步骤的原因，拼成下一轮注入的失败信息"""
+    lines = []
+    for i, r in enumerate(step_results):
+        if r.get("status") == "failed":
+            err = (r.get("error") or r.get("output") or "未知错误")[:200]
+            lines.append(f"step {i+1} ({r.get('agent','?')}): {err}")
+    return "\n".join(lines)
+
+
+def rework_loop(task: str, steps: list, rework_rounds: int = 1, execute_round=None) -> dict:
+    """Rework Loop 核心：失败 → 收集原因 → 带上一轮失败信息重跑（而非直接失败）。
+
+    execute_round(task, steps, feedback) -> step_results：可注入的轮执行器
+    （测试/复用）；缺省走 _rework_execute_round（真实 dispatch 链路）。
+    """
+    rounds = []
+    feedback = ""
+    for round_no in range(rework_rounds + 1):
+        if execute_round is not None:
+            results = execute_round(task, steps, feedback)
+        else:
+            results = _rework_execute_round(task, steps, feedback)
+        ok = all(r.get("status") == "ok" for r in results) and len(results) > 0
+        rounds.append({"round": round_no + 1, "success": ok,
+                       "rework_feedback": feedback, "step_results": results})
+        if ok:
+            break
+        feedback = failure_feedback(results)
+    success = rounds[-1]["success"]
+    return {"task": task, "success": success, "rounds_run": len(rounds),
+            "rounds": rounds, "final_feedback": "" if success else feedback,
+            "loop": {"type": "rework", "round": len(rounds), "maxRounds": rework_rounds}}
+
+
+def _rework_execute_round(task: str, steps: list, feedback: str = "") -> list:
+    """Rework 默认轮执行器：顺序跑 steps（与 run_step 同一节点函数，
+    带 rework_feedback 注入），不依赖 langgraph 建图。"""
+    state = WorkflowState(task=task, task_type="code", steps=steps, step_results=[],
+                          current_step=0, overall_status="running", error="",
+                          rework_round=0, rework_feedback=feedback)
+    for step in steps:
+        _make_node_fn(step)(state)
+    return state["step_results"]
+
+
+def run_rework(task: str, steps_json: str, rework_rounds: int = 1) -> str:
+    """Rework Loop 的 stitch 入口（真实执行链路，无需 langgraph）"""
+    steps = json.loads(steps_json) if isinstance(steps_json, str) else steps_json
+    result = rework_loop(task, steps, rework_rounds)
+    # 轮次落账 → 集体回顾（FR-E1.1/E1.2 的自动触发数据源）
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
+        from eto.stitches.reflection import _record_round_quiet
+        _record_round_quiet(task, result["success"], "rework",
+                            f"rounds_run={result['rounds_run']}")
+    except Exception as e:
+        print(f"reflect record skipped: {e}", file=sys.stderr)
+    return json.dumps(result, ensure_ascii=False)
+
+
+def execute_workflow(workflow_design_json: str, task: str, rework_rounds: int = 1) -> str:
     wf = json.loads(workflow_design_json) if isinstance(workflow_design_json, str) else workflow_design_json
     graph = build_graph(wf)
-    initial = WorkflowState(task=task, task_type="code", steps=wf["steps"], step_results=[], current_step=0, overall_status="running", error="")
-    final = graph.invoke(initial)
+    # Rework Loop（FR-E2.2）：整轮失败 → failure_feedback 收集原因 → 带因重跑。
+    # 与图内条件边的 step 级 retry 协调：retry 消耗的是步骤的 max_retries，
+    # rework 消耗的是这里的 rework_rounds，两层各自计数。
+    feedback = ""
+    final = None
+    rounds_run = 0
+    for round_no in range(rework_rounds + 1):
+        initial = WorkflowState(task=task, task_type="code", steps=wf["steps"], step_results=[],
+                                current_step=0, overall_status="running", error="",
+                                rework_round=round_no, rework_feedback=feedback)
+        final = graph.invoke(initial)
+        rounds_run = round_no + 1
+        success = all(r["status"] == "ok" for r in final["step_results"])
+        if success:
+            break
+        feedback = failure_feedback(final["step_results"])
     success = all(r["status"] == "ok" for r in final["step_results"])
 
     # 暴露错误：失败步骤的 error 汇总到顶层，不吞掉
@@ -363,13 +453,13 @@ def execute_workflow(workflow_design_json: str, task: str) -> str:
         }, author="workflow", ttl=86400)
     except: pass
 
-    return json.dumps({"step_results": final["step_results"], "success": success, "total_steps": len(final["step_results"]), "errors": errors}, ensure_ascii=False)
+    return json.dumps({"step_results": final["step_results"], "success": success, "total_steps": len(final["step_results"]), "errors": errors, "rework": {"rounds_run": rounds_run, "maxRounds": rework_rounds, "final_feedback": "" if success else feedback}}, ensure_ascii=False)
 
 def run_step(step_json: str, task: str) -> str:
     """执行单个步骤节点（不依赖 langgraph 建图），供集成测试直接验证状态语义。"""
     step = json.loads(step_json) if isinstance(step_json, str) else step_json
     node = _make_node_fn(step)
-    state = WorkflowState(task=task, task_type="code", steps=[step], step_results=[], current_step=0, overall_status="running", error="")
+    state = WorkflowState(task=task, task_type="code", steps=[step], step_results=[], current_step=0, overall_status="running", error="", rework_round=0, rework_feedback="")
     node(state)
     return json.dumps(state["step_results"][0], ensure_ascii=False)
 

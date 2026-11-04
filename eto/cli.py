@@ -1,5 +1,5 @@
 """ETO Mesh CLI — 平台无关的 Agent 注册与状态查看"""
-import json, os, platform, shutil, sys
+import json, os, platform, shutil, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,6 +9,8 @@ from rich.console import Console
 from rich.table import Table
 
 REGISTRY_PATH = Path.home() / ".eto" / "registry.json"
+# 集体回顾 stitch（FR-E1.3 的 `eto reflect` 手动触发入口）
+REFLECTION_SCRIPT = Path(__file__).resolve().parent / "stitches" / "reflection.py"
 
 
 def detect_platform() -> str:
@@ -96,17 +98,36 @@ def cmd_status():
     print(f"Total: {len(agents)} agent(s)")
 
 
+def cmd_reflect():
+    """集体回顾（FR-E1.3）：跑 eto/stitches/reflection.py reflect 并透传退出码"""
+    if not REFLECTION_SCRIPT.exists():
+        print("reflection stitch missing: %s" % REFLECTION_SCRIPT, file=sys.stderr)
+        sys.exit(1)
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(REFLECTION_SCRIPT), "reflect"],
+            timeout=30,
+        )
+        sys.exit(proc.returncode)
+    except subprocess.TimeoutExpired:
+        print("collective reflection timed out", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("--help", "-h"):
-        print("用法: eto-mesh <join|status>")
-        print("   join    注册本机到 Mesh")
-        print("   status  查看 Mesh Agent 列表")
+        print("用法: eto-mesh <join|status|reflect>")
+        print("   join     注册本机到 Mesh")
+        print("   status   查看 Mesh Agent 列表")
+        print("   reflect  手动触发集体回顾（FR-E1）")
         return
     cmd = sys.argv[1]
     if cmd == "join":
         cmd_join()
     elif cmd == "status":
         cmd_status()
+    elif cmd == "reflect":
+        cmd_reflect()
     else:
         print(f"未知命令: {cmd}", file=sys.stderr)
         sys.exit(1)
