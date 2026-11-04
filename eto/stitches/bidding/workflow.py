@@ -408,15 +408,29 @@ def run_rework(task: str, steps_json: str, rework_rounds: int = 1) -> str:
     """Rework Loop 的 stitch 入口（真实执行链路，无需 langgraph）"""
     steps = json.loads(steps_json) if isinstance(steps_json, str) else steps_json
     result = rework_loop(task, steps, rework_rounds)
-    # 轮次落账 → 集体回顾（FR-E1.1/E1.2 的自动触发数据源）
+    # 轮次落账 → 集体回顾（FR-E1.1/E1.2 的自动触发数据源）。
+    # agent 用失败步骤所属 agent（回顾的权重调整按 profiles.json 的 agent 名查表），
+    # loop 类型放进 detail，不能占用 agent 字段。
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
         from eto.stitches.reflection import _record_round_quiet
-        _record_round_quiet(task, result["success"], "rework",
-                            f"rounds_run={result['rounds_run']}")
+        _record_round_quiet(task, result["success"], _last_failed_agent(result["rounds"]),
+                            f"loop=rework rounds_run={result['rounds_run']}")
     except Exception as e:
         print(f"reflect record skipped: {e}", file=sys.stderr)
     return json.dumps(result, ensure_ascii=False)
+
+
+def _last_failed_agent(rounds: list) -> str:
+    """从 rework 轮次里取失败步骤的 agent（无失败则取首个步骤 agent）"""
+    for rnd in reversed(rounds or []):
+        for step_result in rnd.get("step_results") or []:
+            if step_result.get("status") == "failed":
+                return step_result.get("agent", "?")
+    for rnd in rounds or []:
+        for step_result in rnd.get("step_results") or []:
+            return step_result.get("agent", "?")
+    return "?"
 
 
 def execute_workflow(workflow_design_json: str, task: str, rework_rounds: int = 1) -> str:
@@ -453,7 +467,26 @@ def execute_workflow(workflow_design_json: str, task: str, rework_rounds: int = 
         }, author="workflow", ttl=86400)
     except: pass
 
+    # 轮次落账 → 集体回顾（FR-E1.1/E1.2 的数据源）。
+    # 这条是生产主路径（eto.ts plan 分支每次都走 execute_workflow），缺了它
+    # 回顾只能看到手动 run_rework/run_iteration 的样本。
+    _record_workflow_round(task, success, final["step_results"], errors, rounds_run)
+
     return json.dumps({"step_results": final["step_results"], "success": success, "total_steps": len(final["step_results"]), "errors": errors, "rework": {"rounds_run": rounds_run, "maxRounds": rework_rounds, "final_feedback": "" if success else feedback}}, ensure_ascii=False)
+
+
+def _record_workflow_round(task: str, success: bool, step_results: list,
+                           errors: list, rounds_run: int) -> None:
+    """把一次工作流执行落账进集体回顾历史（失败原因按首个失败步骤记）"""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
+        from eto.stitches.reflection import _record_round_quiet
+        failed = next((r for r in step_results if r.get("status") == "failed"), None)
+        agent = failed.get("agent", "?") if failed else (step_results[0].get("agent", "?") if step_results else "?")
+        detail = (errors[0] if errors else f"rework rounds={rounds_run}")[:200]
+        _record_round_quiet(task, success, agent, detail if not success else "")
+    except Exception as e:
+        print(f"reflect record skipped: {e}", file=sys.stderr)
 
 def run_step(step_json: str, task: str) -> str:
     """执行单个步骤节点（不依赖 langgraph 建图），供集成测试直接验证状态语义。"""

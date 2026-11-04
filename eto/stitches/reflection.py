@@ -126,53 +126,82 @@ def compare_rounds(outputs: list) -> list:
     return [round(similarity(outputs[i - 1], outputs[i]), 3) for i in range(1, len(outputs))]
 
 
+def _normalize_round_result(res) -> tuple[str, bool]:
+    """统一轮执行器返回值：str 视为成功输出；dict 按 status/output/error 解析。"""
+    if isinstance(res, dict):
+        text = str(res.get("output") or res.get("error") or "")
+        return text, res.get("status", "ok") == "ok" and bool(text.strip())
+    text = "" if res is None else str(res)
+    return text, bool(text.strip())
+
+
 def iteration_loop(task: str, max_rounds: int = 3, threshold: float = 0.9,
                    execute_round=None) -> dict:
     """Iteration Loop：每轮执行一次任务，与上一轮结果比较，收敛即停。
 
-    execute_round(round_no) -> str：可注入的轮执行器（测试/复用）；
+    execute_round(round_no) -> str | dict：可注入的轮执行器（测试/复用）；
     缺省用 _default_iteration_executor（走 bidding/workflow.run_step）。
+
+    收敛 = 相邻两轮都成功且相似度 ≥ threshold。失败轮一律不算收敛：
+    否则「每轮都返回同一条错误」会被误判成已收敛（相似度 1.0），
+    这正是 Iteration 最需要避免的假信号。
     """
     ctx = LoopContext("iteration", max_rounds, task)
-    outputs, sims = [], []
+    outputs, sims, results = [], [], []
     while ctx.should_continue():
         rnd = ctx.next_round()
-        out = str(execute_round(rnd) if execute_round else _default_iteration_executor(task, rnd))
-        outputs.append(out)
-        ctx.artifacts.append({"round": rnd, "output": out[:200]})
+        text, ok = _normalize_round_result(
+            execute_round(rnd) if execute_round else _default_iteration_executor(task, rnd))
+        outputs.append(text)
+        results.append({"round": rnd, "output": text[:500], "status": "ok" if ok else "failed"})
+        ctx.artifacts.append({"round": rnd, "output": text[:200], "status": "ok" if ok else "failed"})
         if len(outputs) >= 2:
             s = similarity(outputs[-2], outputs[-1])
             sims.append(round(s, 3))
-            if s >= threshold:
+            if s >= threshold and ok and results[-2]["status"] == "ok":
                 break
-    converged = bool(sims) and sims[-1] >= threshold
+    converged = (bool(sims) and sims[-1] >= threshold
+                 and all(r["status"] == "ok" for r in results[-2:]))
     return {
         "task": task, "rounds": ctx.round, "converged": converged,
         "similarities": sims, "outputs": [o[:500] for o in outputs],
+        "round_results": results,
+        "failed_rounds": [r["round"] for r in results if r["status"] == "failed"],
         "loop": ctx.to_dict(),
     }
 
 
-def _default_iteration_executor(task: str, round_no: int) -> str:
-    """默认轮执行器：单步 run_step，取 output/error 作为可比较结果"""
+def _default_iteration_executor(task: str, round_no: int, step: dict | None = None):
+    """默认轮执行器：单步 run_step，返回 dict 让调用方区分成功/失败轮"""
     _ensure_import_root()
     from eto.stitches.bidding.workflow import run_step
-    step = {"step": 1, "agent": "coder", "description": f"第 {round_no} 轮执行",
-            "system_prompt": f"Iteration Loop 第 {round_no} 轮：执行任务并保持与前轮可比的输出格式",
-            "skills": [], "mcp_tools": []}
+    step = step or {"step": 1, "agent": "coder", "description": f"第 {round_no} 轮执行",
+                    "system_prompt": f"Iteration Loop 第 {round_no} 轮：执行任务并保持与前轮可比的输出格式",
+                    "skills": [], "mcp_tools": []}
     try:
         r = json.loads(run_step(json.dumps(step, ensure_ascii=False), task))
-        return (r.get("output") or "") + (r.get("error") or "")
+        status = r.get("status", "failed")
+        return {"status": status, "output": r.get("output") or "", "error": r.get("error") or ""}
     except Exception as e:
-        return f"iteration round error: {e}"
+        return {"status": "failed", "output": "", "error": f"iteration round error: {e}"}
 
 
 def run_iteration(task: str, step_json: str = "", max_rounds: int = 3,
                   threshold: float = 0.9) -> str:
     """Iteration Loop 的 stitch 入口（真实执行链路）"""
-    result = iteration_loop(task, max_rounds, threshold)
-    _record_round_quiet(task, result["converged"], "iteration",
-                        f"rounds={result['rounds']} converged={result['converged']}")
+    step = json.loads(step_json) if step_json else None
+    if step is not None:
+        result = iteration_loop(
+            task, max_rounds, threshold,
+            execute_round=lambda rnd: _default_iteration_executor(task, rnd, step))
+    else:
+        result = iteration_loop(task, max_rounds, threshold)
+    # agent 用实际执行的 agent（回顾的权重调整按 profiles.json 的 agent 名查表），
+    # loop 类型放进 detail，不能占用 agent 字段。
+    agent = (step or {}).get("agent", "coder")
+    _record_round_quiet(task, result["converged"], agent,
+                        f"loop=iteration rounds={result['rounds']} "
+                        f"converged={result['converged']} failed={result['failed_rounds']}")
     return json.dumps(result, ensure_ascii=False)
 
 

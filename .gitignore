@@ -21,6 +21,7 @@ _archive_src/
 nul
 __pycache__/
 *.pyc
+*.egg-info/
 
 # Cloned stitch repos (external)
 eto/stitches/maestro/
