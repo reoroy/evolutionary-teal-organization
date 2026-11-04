@@ -479,15 +479,17 @@ Rework Loop（FR-E2.2）  → 整轮失败 → failure_feedback 收集原因 →
                             单步 retry 分层：retry 消耗 max_retries，
                             rework 消耗 rework_rounds）
 Iteration Loop（FR-E2.2）→ 同任务多轮执行 → difflib 相邻轮相似度 → 收敛即停
-                          （run_iteration，输出可比：similarities 序列）
+                          （run_iteration，输出可比：similarities 序列；
+                            失败轮不算收敛，避免「每轮同一条错误」被当成已收敛）
 集体回顾（FR-E1）        → record_round 落账 → 每 10 轮 / 最近 5 轮失败 > 3
                           自动触发 → 聚类失败 → 识别模式 → 调整策略权重
                           （写入 shared_memory，竞标 weights 降级路径消费）
                           → 回顾报告（发现 + 调整 + 建议）
+                          生产落账点在 execute_workflow（plan 分支每次执行都记一轮）
 手动触发：eto-mesh reflect / /reflect（Pi） / python3 eto/stitches/reflection.py reflect
 ```
 
-验证命令：`python3 eto/stitches/test.py`（Loop/回顾 28 项检查，含「真的再跑一轮」断言——Rework 第二轮收到的注入里含第一轮失败原因，Iteration 收敛即停且相似度序列可比）。
+验证命令：`python3 eto/stitches/test.py`（Loop/回顾 31 项检查，含「真的再跑一轮」断言——Rework 第二轮收到的注入里含第一轮失败原因，Iteration 收敛即停且相似度序列可比）。
 
 > ⚠️ Watch / Cron 两种 Loop **仅有意图检测，执行器缺失**（`grep -n "未实现" eto/stitches/reflection.py` 可见标注）：Watch 需常驻文件/PR 监听进程，Cron 需外部调度器（launchd/cron/CI schedule），不在本轮范围。检测到这两类意图时系统明确报「未实现」而非静默装作支持。跟踪 issue：#28。
 
@@ -704,7 +706,8 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
 | 三体权重 / MODE 路由 | — | 设计见 requirements FR-A2.3/A3 | ⬜ 缺失（#26） |
 | 置信度学习 | — | 设计见 requirements FR-A2.4 | ⬜ 缺失（#30） |
 | 权限绑定与任务预算 | — | 设计见 requirements FR-D3 | ⬜ 缺失（#27） |
-| 集体回顾 / 四种 Loop | — | 设计见 requirements FR-E1/E2 | ⬜ 缺失（#28） |
+| 集体回顾 + Rework/Iteration Loop | `stitches/reflection.py` | `eto-mesh reflect` / `run_rework` / `run_iteration` | ✅ |
+| Watch / Cron Loop | — | 仅意图检测，执行器需常驻监听 / 外部调度 | ⬜ 缺失 |
 
 ### 原则
 
