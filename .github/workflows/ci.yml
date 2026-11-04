@@ -18,9 +18,10 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   # 25 基线 + issue #16 反馈注入 3 项 + issue #14 上下文注入 3 项（main）
   # + issue #15 MCP peer 2 项（main #20）+ issue #13 工作流 3 项（main #22）
-  # + issue #28 集体回顾/Loop 28 项（本分支：LoopContext 3 + 意图检测 6
-  # + Rework 5 + Iteration 4 + 集体回顾 10）
-  EXPECTED_PASS: "63"
+  # + issue #29 选举 Raft 语义 5 项（main #34）
+  # + issue #28 集体回顾/Loop 27 项（本分支：LoopContext 3 + 意图检测 6
+  # + Rework 5 + Iteration 4 + 集体回顾 9）
+  EXPECTED_PASS: "68"
 
 jobs:
   # Job 1: the demo must pass on a bare interpreter (no third-party packages,

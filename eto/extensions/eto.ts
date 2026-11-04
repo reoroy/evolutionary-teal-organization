@@ -337,10 +337,56 @@ async function peerConsensus(plan: string, peers: string[]): Promise<Record<stri
   return r && !("_error" in r) ? r : null;
 }
 
-async function electCoordinator(candidates: [string, number][]): Promise<string> {
+async function electCoordinator(candidates: [string, number][] | Record<string, unknown>[]): Promise<string | null> {
   const result = await callStitchAsync("election.elect", "elect", candidates);
-  if (!result || "_error" in result) return candidates[0]?.[0] || "researcher";
-  return (result as Record<string, unknown>)?.leader as string || candidates[0]?.[0] || "researcher";
+  if (!result || "_error" in result) return (candidates[0] as any)?.[0] || (candidates[0] as any)?.name || "researcher";
+  const leader = (result as Record<string, unknown>)?.leader as string | null;
+  // quorum 未达成（method=raft-no-quorum）→ leader=null，由调用方决定回退
+  if (leader === null || leader === undefined) return null;
+  return leader || (candidates[0] as any)?.[0] || (candidates[0] as any)?.name || "researcher";
+}
+
+// ═══════════════════════════════════════════════════
+//  busy_ratio — FR-C1.4 真实负载来源（运行中任务 / 最大并发）
+// ═══════════════════════════════════════════════════
+
+const BUSY_PATH = () => {
+  const dir = join(homedir(), ".eto");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return join(dir, "busy.json");
+};
+
+/** 读取各 peer 的运行中任务数（dispatch 前后更新） */
+function loadBusy(): Record<string, number> {
+  try { return JSON.parse(readFileSync(BUSY_PATH(), "utf-8")); } catch { return {}; }
+}
+
+function saveBusy(busy: Record<string, number>): void {
+  writeFileSync(BUSY_PATH(), JSON.stringify(busy, null, 2), "utf-8");
+}
+
+function bumpBusy(peer: string, delta: number): void {
+  const busy = loadBusy();
+  busy[peer] = Math.max(0, (busy[peer] || 0) + delta);
+  saveBusy(busy);
+}
+
+/** FR-C1.4: busy_ratio = 运行中任务 / 最大并发，0..1（无记录=空闲） */
+function busyRatioFor(profile: AgentProfile): number {
+  const running = loadBusy()[profile.name] || 0;
+  const max = Math.max(1, profile.maxSubtasks || 1);
+  return Math.min(1, running / max);
+}
+
+/** FR-C1.2/FR-C1.3: 候选 = profiles.json 的 match_score × (1 - busy_ratio)。
+ *  分数不再硬编码：match_score 取 AgentProfile.weights[gewu]（profiles.json），
+ *  加 MODE coordinatorHint 奖励；busy_ratio 由 ~/.eto/busy.json 实时计算传入选举 stitch。 */
+function buildElectionCandidates(gewu: string, hint: string): Record<string, unknown>[] {
+  return AGENT_PROFILES.map(p => ({
+    name: p.name,
+    match_score: (p.weights?.[gewu] || 0) + (hint && p.name === hint ? 0.1 : 0),
+    busy_ratio: busyRatioFor(p),
+  }));
 }
 
 async function executePlanViaMaestro(task: string, steps: string[]): Promise<any[]> {
@@ -548,8 +594,9 @@ async function tryDispatchToMCPAgent(peerName: string, task: string): Promise<st
  * - debate：共识审议（含 REWORK 轮次）
  * - research / build / full：流水线步骤按 MODE 区分；乱纪元加深审核（FR-A3.3）
  */
-async function dispatchByMode(task: string, route: RouteResult, contextTask: string): Promise<string> {
+async function dispatchByMode(task: string, route: RouteResult, contextTask: string, coordinator?: string): Promise<string> {
   const dispatch = route.dispatch;
+  const coord = coordinator || route.coordinator;
 
   if (dispatch.path === "direct") {
     return `MODE=direct：单次回答，不编排`;
@@ -569,15 +616,17 @@ async function dispatchByMode(task: string, route: RouteResult, contextTask: str
 
   // pipeline / full：步骤按 MODE 取自 dispatch.steps（research/build/full 各不同）
   const steps = dispatch.steps.length > 0 ? dispatch.steps : ["执行方案", "审查结果"];
-  const consensusPeers = dispatch.reviewPeers.length > 0 ? dispatch.reviewPeers : [route.coordinator, "auditor"];
+  const consensusPeers = dispatch.reviewPeers.length > 0 ? dispatch.reviewPeers : [coord, "auditor"];
   const consensus = await peerConsensus(contextTask, consensusPeers);
+  bumpBusy(coord, +1);  // FR-C1.4：运行中任务 +1，busy_ratio 反映到下次选举
   const outputs = await executePlanViaMaestro(contextTask, steps);
+  bumpBusy(coord, -1);  // 任务完成 → 负载释放（FR-C1.5 协调员角色解散）
   const reworkNote = dispatch.reworkRounds > 1 ? `\nREWORK 上限: ${dispatch.reworkRounds} 轮（乱纪元自动加深，FR-A3.3）` : ``;
   if (outputs.length > 0) {
     const details = outputs.map((o: string, i: number) => `  >> Step ${i+1} (${steps[i]}):\n  ${o.slice(0, 300)}`).join("\n\n");
-    return `MODE=${route.mode} | 协调员: ${route.coordinator}\n共识: ${consensus?.status || "通过"}\n共 ${steps.length} 步${reworkNote}\n\n${details}`;
+    return `MODE=${route.mode} | 协调员: ${coord}\n共识: ${consensus?.status || "通过"}\n共 ${steps.length} 步${reworkNote}\n\n${details}`;
   }
-  return `MODE=${route.mode} | 协调员: ${route.coordinator}, 共 ${steps.length} 步, 共识: ${consensus?.status || "通过"}${reworkNote}`;
+  return `MODE=${route.mode} | 协调员: ${coord}, 共 ${steps.length} 步, 共识: ${consensus?.status || "通过"}${reworkNote}`;
 }
 
 async function execPlan(task: string, route: RouteResult): Promise<string> {
@@ -589,21 +638,22 @@ async function execPlan(task: string, route: RouteResult): Promise<string> {
     if (ctx) contextTask = ctx + "\n\n" + task;
   } catch {}
 
-  // FR-A3.1：协调员候选按 MODE 的 coordinatorHint 加权
+  // FR-A3.1 + FR-C1.2：候选分数来自 profiles.json 的 match_score × (1 - busy_ratio)，
+  // busy_ratio 为 ~/.eto/busy.json 的真实负载；MODE 的 coordinatorHint 参与加权
   const hint = route.dispatch.coordinatorHint;
-  const candidates: [string, number][] = [
-    ["researcher", (route.gewu === "research" ? 0.9 : 0.5) + (hint === "researcher" ? 0.1 : 0)],
-    ["coder", (route.gewu === "code" ? 0.9 : 0.5) + (hint === "coder" ? 0.1 : 0)],
-    ["auditor", (route.gewu === "solution" ? 0.9 : 0.5) + (hint === "auditor" ? 0.1 : 0)],
-  ];
-  const coordinator = await electCoordinator(candidates);
+  const candidates = buildElectionCandidates(route.gewu, hint);
+  let coordinator = await electCoordinator(candidates);
+  if (coordinator === null) {
+    // quorum 未达成（全员满载等）→ 回退路由层 coordinator
+    coordinator = route.coordinator;
+  }
 
   // Try MCP agent dispatch first
   const mcpResult = await tryDispatchToMCPAgent(coordinator, contextTask);
   if (mcpResult) return mcpResult;
 
   // MODE 派发：按 MODE 走不同路径（direct/debate/pipeline/full）
-  return dispatchByMode(task, route, contextTask);
+  return dispatchByMode(task, route, contextTask, coordinator);
 }
 
 // ═══════════════════════════════════════════════════
@@ -908,15 +958,15 @@ export default function (pi: ExtensionAPI) {
         return { systemPrompt: routeLines.join("\n") + "\n\n" + (event.systemPrompt || "") };
       }
 
-      // 1. 先选协调员（Raft）—— MODE 的 coordinatorHint 参与 weighting
+      // 1. 先选协调员（Raft）—— 候选分数来自 profiles.json + 真实 busy_ratio（FR-C1.2）
       ctx.ui.notify(`🗳️ 选举协调员...`, "info");
       const hint = route.dispatch.coordinatorHint;
-      const candidates_: [string, number][] = [
-        ["researcher", (route.gewu === "research" ? 0.9 : 0.5) + (hint === "researcher" ? 0.1 : 0)],
-        ["coder", (route.gewu === "code" ? 0.9 : 0.5) + (hint === "coder" ? 0.1 : 0)],
-        ["auditor", (route.gewu === "solution" ? 0.9 : 0.5) + (hint === "auditor" ? 0.1 : 0)],
-      ];
-      const coordinator = await electCoordinator(candidates_);
+      const candidates_ = buildElectionCandidates(route.gewu, hint);
+      let coordinator = await electCoordinator(candidates_);
+      if (coordinator === null) {
+        // quorum 未达成 → 回退路由层 coordinator
+        coordinator = route.coordinator;
+      }
       ctx.ui.notify(`👤 协调员: ${coordinator}`, "info");
 
       // 2. 协调员设计工作流

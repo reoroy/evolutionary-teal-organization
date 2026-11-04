@@ -692,7 +692,7 @@ ETO 的 `shared_memory.py` 使用与 pi-team-agents 兼容的 KV 格式，两边
 |:-----|:------|:-------|:-----|
 | 路由 + 安检 v2 + 入口 | `extensions/eto.ts` | Pi Extension，~919 行 | ✅ |
 | 共识 | `stitches/consensus/vote.py` | 三阶段评分→审议→终审 | ✅ |
-| 选举 | `stitches/election/elect.py` | 匹配度×随机因子推举/竞标选标 | 🔶 仅占位（无 Raft term/quorum/持久化，见 #29） |
+| 选举 | `stitches/election/elect.py` | Raft 语义：term/quorum/持久化/busy_ratio（FR-C1.2） | ✅ |
 | 执行 | `stitches/comms/a2a.py` | 多步任务+上下文传递 | ✅ |
 | MCP Server | `mcp_server.py` | FastMCP，暴露 ETO 工具 | ✅ |
 | MCP Client | `mcp_client.py` | 调其他 Agent 的 MCP 工具 | ✅ |
