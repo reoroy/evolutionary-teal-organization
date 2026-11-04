@@ -48,7 +48,7 @@ Bootstrap 写入 Agent Profile、种子经验、**使用指南（`~/.eto/memory/
 
 ```bash
 python eto/stitches/test.py
-# 期望输出: 46 PASS（未安装 mcp 包时走降级检查）
+# 期望输出: 51 PASS（未安装 mcp 包时走降级检查）
 pip install mcp && python eto/stitches/test.py
 # 装了 mcp 包后：含 "mcp peer score" 检查 —— 用 mock MCP server
 # 验证 provider="mcp" 的 peer 能拿到非空评分
@@ -64,7 +64,7 @@ node --test tests/*.test.mjs
 
 | job | 验证内容 |
 |:----|:---------|
-| `demo` | 裸解释器（不装任何第三方包）直接跑 `eto/stitches/test.py`，断言退出码 0、PASS 数精确匹配（当前 46）、0 FAIL（Python 3.11 / 3.13 矩阵） |
+| `demo` | 裸解释器（不装任何第三方包）直接跑 `eto/stitches/test.py`，断言退出码 0、PASS 数精确匹配（当前 51）、0 FAIL（Python 3.11 / 3.13 矩阵） |
 | `clean install smoke` | 干净 venv 里 `pip install -e eto/`，检查 `eto-mesh` / `eto-bootstrap` 入口与导入，再跑一遍 demo 并同样断言 |
 | `no-langgraph degradation` | 安装去掉 langgraph 的 requirements，确认 langgraph 未安装、demo 仍全过（可选依赖降级路径的回归守卫） |
 | `sentinel preview injection` | Node 24 跑 `node --test tests/*.test.mjs`，验证安检预览不把捕获的 shell 输入喂给 shell |
