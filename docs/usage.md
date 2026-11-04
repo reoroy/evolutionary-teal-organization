@@ -202,7 +202,7 @@ Tone:
 |:-----|:------|:------|
 | `/plan-eto` | 写 Reasonix plan | `docs/handoffs/reasonix/plan-*.md` |
 | `/code-eto` | 触发 Reasonix 实现 | Reasonix 完成回执 |
-| `/test-eto` | 跑测试 | `python eto/stitches/test.py` (51/51) |
+| `/test-eto` | 跑测试 | `python eto/stitches/test.py` (52/52) |
 | `/review-eto` | 审计 completion | 审计报告 |
 | `/release-eto` | 版本 bump + tag + push | 发布版本 |
 

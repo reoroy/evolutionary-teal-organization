@@ -43,7 +43,16 @@ def _apply_governance(spec: dict) -> dict | None:
                                   f"budget 检查异常（fail-closed）: {type(e).__name__}: {e}")
     return None
 
-def dispatch(server_cmd_json: str, tool: str, task: str) -> dict:
+def dispatch(server_cmd_json: str, tool: str, task: str, agent: str = "", task_id: str = "") -> dict:
+    """旧版入口（无 spec）。同样过治理门，否则它就是绕过 permit/budget 的后门。
+
+    旧调用方不带 agent/task_id：启用 permit 后缺 agent 一律拒绝（身份不明），
+    想放行就必须显式传 agent；未配置治理时行为与旧版一致。
+    """
+    spec = {"tool": tool, "task": task, "agent": agent, "task_id": task_id}
+    denied = _apply_governance(spec)
+    if denied is not None:
+        return denied
     import sys as _sys
     _sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
     from eto.mcp_client import sync_call_mcp

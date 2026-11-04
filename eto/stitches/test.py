@@ -612,4 +612,22 @@ _p = _p and "spec.task_id = currentTaskId" in _ts_src and "_governance" in _ts_s
 print(f"{OK_MARK if _p else FAIL_MARK} gov dispatch路径接线  先治理后调用")
 all_ok = all_ok and _p
 
+# 11. 旧版 dispatch() 入口同样是治理门，不能当绕过后门：
+#     启用 permit 后不传 agent（旧调用方）必须被拒，而不是悄悄放行
+with tempfile.TemporaryDirectory() as tmp_home:
+    _gov_setup(tmp_home, {"default": "deny", "agents": {"coder": ["agent_execute"]}}, None)
+    env = {**os.environ, "HOME": tmp_home}
+    def _legacy(*args):
+        return subprocess.run([PY, str(ROOT / "mcp_dispatch.py")],
+                              input=json.dumps({"fn": "dispatch", "args": list(args)}),
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=10, env=env)
+    no_agent = _gov_out(_legacy("[]", "agent_execute", "t"))
+    with_agent = _gov_out(_legacy("[]", "agent_execute", "t", "coder"))
+    p = (no_agent.get("code") == "PERMIT_DENIED"
+         and "缺 agent" in no_agent.get("message", "")
+         and "_governance" not in with_agent)
+    print(f"{OK_MARK if p else FAIL_MARK} gov 旧dispatch不绕过   缺agent即拒")
+    all_ok = all_ok and p
+
 sys.exit(0 if all_ok else 1)
