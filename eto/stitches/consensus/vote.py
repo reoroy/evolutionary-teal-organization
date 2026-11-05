@@ -41,6 +41,27 @@ def _load_peer_config() -> dict:
         _PEER_CONFIG_CACHE = dict(DEFAULT_PEER_CONFIG)
     return _PEER_CONFIG_CACHE
 
+#: Marker prefix for a provider failure that must travel as data, not as an empty string.
+#: `_score_single` recognises it and marks the vote degraded instead of keeping a default 0.5.
+_PROVIDER_ERROR = "__ETO_PROVIDER_ERROR__"
+
+
+def _provider_error(provider: str, model: str, reason: str) -> str:
+    """Encode a provider failure so the caller can tell it apart from a real (empty) answer."""
+    return _PROVIDER_ERROR + json.dumps(
+        {"provider": provider, "model": model, "reason": reason}, ensure_ascii=False)
+
+
+def _parse_provider_error(raw: str) -> dict | None:
+    """Return the decoded failure, or None when `raw` is a genuine model reply."""
+    if not isinstance(raw, str) or not raw.startswith(_PROVIDER_ERROR):
+        return None
+    try:
+        return json.loads(raw[len(_PROVIDER_ERROR):])
+    except (json.JSONDecodeError, TypeError):
+        return {"provider": "?", "model": "?", "reason": f"unparsable provider error: {raw[:120]}"}
+
+
 def _call_provider(provider: str, model: str, system: str, prompt: str) -> str:
     """路由到不同的 LLM provider"""
     full = f"{system}\n\n{prompt}" if system else prompt
@@ -61,8 +82,14 @@ def _call_ollama(model: str, full_prompt: str) -> str:
         headers={"Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8")).get("response", "").strip()
-    except: return ""
+            text = json.loads(resp.read().decode("utf-8")).get("response", "").strip()
+        if text == "":
+            return _provider_error("ollama", model, "模型返回空文本")
+        return text
+    except Exception as e:
+        # 传输失败必须可区分：返回 "" 会让上层把「没连上」当成「模型答了 0.5 分」。
+        logger.error("ollama 调用失败 peer=%s model=%s: %s: %s", _MCP_CURRENT_PEER, model, type(e).__name__, e)
+        return _provider_error("ollama", model, f"{type(e).__name__}: {e}")
 
 def _call_deepseek(model: str, system: str, prompt: str) -> str:
     """调 DeepSeek API (OpenAI 兼容)"""
@@ -79,8 +106,13 @@ def _call_deepseek(model: str, system: str, prompt: str) -> str:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read().decode("utf-8"))
-            return (body.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
-    except: return ""
+            text = (body.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+        if text == "":
+            return _provider_error("deepseek", model, "模型返回空文本")
+        return text
+    except Exception as e:
+        logger.error("deepseek 调用失败 peer=%s model=%s: %s: %s", _MCP_CURRENT_PEER, model, type(e).__name__, e)
+        return _provider_error("deepseek", model, f"{type(e).__name__}: {e}")
 
 def _call_claude(model: str, system: str, prompt: str) -> str:
     """调 Claude API（通过本地代理 Hermes 转发）"""
@@ -97,8 +129,13 @@ def _call_claude(model: str, system: str, prompt: str) -> str:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read().decode("utf-8"))
             content = body.get("content") or []
-            return "".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
-    except: return ""
+            text = "".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
+        if text == "":
+            return _provider_error("claude", model, "模型返回空文本")
+        return text
+    except Exception as e:
+        logger.error("claude 调用失败 peer=%s model=%s: %s: %s", _MCP_CURRENT_PEER, model, type(e).__name__, e)
+        return _provider_error("claude", model, f"{type(e).__name__}: {e}")
 
 def _call_mcp_agent(config_json: str, system: str, prompt: str) -> str:
     """通过 MCP Client 调其他 Agent 的工具评分
@@ -171,21 +208,47 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 def _call_llm(system: str, prompt: str) -> str:
-    """调 Ollama，返回原始文本"""
+    """调 Ollama，返回原始文本；失败时返回 _error 结构（不静默）。"""
     full = f"{system}\n\n{prompt}"
     data = json.dumps({"model": MODEL, "prompt": full, "stream": False, "options": {"temperature": 0.7, "num_predict": 800}}).encode("utf-8")
     req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=data, headers={"Content-Type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8")).get("response", "").strip()
-    except: return ""
+            text = json.loads(resp.read().decode("utf-8")).get("response", "").strip()
+        if text == "":
+            return _provider_error("ollama", MODEL, "模型返回空文本")
+        return text
+    except Exception as e:
+        logger.error("ollama(_call_llm) 失败 model=%s: %s: %s", MODEL, type(e).__name__, e)
+        return _provider_error("ollama", MODEL, f"{type(e).__name__}: {e}")
 
 def _score_single(peer: str, plan: str) -> dict:
     """单 peer 评分，返回 {score, concern, suggestion}"""
     system = PEER_SYSTEM_PROMPTS.get(peer, "你是一个评审专家。")
     raw = _call_peer(peer, system, f"请对以下执行计划评分。输出 JSON: {{\"score\": 0.0-1.0, \"concern\": \"\", \"suggestion\": \"\"}}\n\n计划: {plan}")
+
+    # A provider failure is DATA, not a score. Before this branch existed, a dead Ollama looked
+    # exactly like a peer that answered 0.5 — the "fake success" the panel used to report.
+    failure = _parse_provider_error(raw)
+    if failure is not None:
+        logger.error("peer=%s provider=%s/%s 无响应: %s", peer, failure.get("provider"), failure.get("model"), failure.get("reason"))
+        return {
+            "peer": peer,
+            "score": None,
+            "concern": f"[{peer}] provider {failure.get('provider')}/{failure.get('model')} 无响应: {failure.get('reason')}"[:300],
+            "suggestion": "",
+            "provider_error": True,
+        }
+
     parsed = _extract_json(raw)
     result = {"peer": peer, "score": 0.5, "concern": "", "suggestion": ""}
+    if parsed is None:
+        # The model answered, but not with the JSON we asked for. That is still a degraded vote —
+        # keeping 0.5 here would be indistinguishable from a real middling score.
+        logger.error("peer=%s 回复无法解析为评分 JSON（前 120 字）: %r", peer, raw[:120])
+        result["concern"] = f"[{peer}] 模型回复无法解析为评分 JSON: {raw[:120]}"
+        result["provider_error"] = True
+        result["score"] = None
     if parsed:
         if parsed.get("_error"):
             # provider 判定为「必须上报」的失败：带在 concern 里冒出来，不再静默退回默认分
@@ -221,11 +284,47 @@ def peer_review(plan: str, peers: list[str]) -> dict:
     """三阶段共识：T1评分 → T2审议 → T3终审"""
     # T1: 独立评分
     votes = [_score_single(p, plan) for p in peers]
-    scores = [v["score"] for v in votes]
+
+    # A vote with score=None is a degraded peer (provider down / unparsable reply). Excluding it
+    # from the tally is what stops three dead peers from averaging into a confident-looking 0.333.
+    usable = [v for v in votes if v.get("score") is not None]
+    degraded = [v for v in votes if v.get("score") is None]
+
+    if not usable:
+        # Nothing real came back. Say so — `ok: true` with a fake score is what caused the panel
+        # to show a green check on a review no model ever performed.
+        logger.error("共识评审全部 %d 个 peer 均无有效评分", len(votes))
+        return {
+            "status": "degraded",
+            "final_score": None,
+            "votes": votes,
+            "deliberation": {"rounds": 0, "strategies": {}},
+            "actions": ["所有 peer 均未返回有效评分；请检查 provider 是否可用（ollama 是否在运行）"],
+            "degraded": True,
+            "degraded_peers": [v["peer"] for v in degraded],
+            "audit_id": f"v{int(__import__('time').time())}",
+        }
+
+    scores = [v["score"] for v in usable]
     tally = _multi_strategy_tally(scores)
     avg = tally["final"]
-    gap = max(scores) - min(scores) if scores else 0
-    result = {"status": "approved" if avg >= 0.6 else "revise", "final_score": avg, "votes": votes, "deliberation": {"rounds": 0, "strategies": tally["strategies"]}, "actions": [], "audit_id": f"v{int(__import__('time').time())}"}
+    gap = max(scores) - min(scores) if len(scores) > 1 else 0
+    result = {
+        "status": "approved" if avg >= 0.6 else "revise",
+        "final_score": avg,
+        "votes": votes,
+        "deliberation": {"rounds": 0, "strategies": tally["strategies"]},
+        "actions": [],
+        "audit_id": f"v{int(__import__('time').time())}",
+    }
+    if degraded:
+        # Partial degradation: the score is real but incomplete. Surface which peers are missing
+        # so the reader knows the verdict rests on fewer opinions than requested.
+        result["degraded"] = True
+        result["degraded_peers"] = [v["peer"] for v in degraded]
+        result["actions"].append(
+            f"{len(degraded)}/{len(votes)} 个 peer 无有效评分（{', '.join(v['peer'] for v in degraded)}），"
+            f"结论仅基于其余 {len(usable)} 个")
 
     # T2: 分歧大则审议
     if gap > 0.2:

@@ -310,8 +310,13 @@ def _make_node_fn(step: dict):
                 state["step_results"].append({"agent": step["agent"], "status": "failed", "output": result.get("output", ""), "error": result.get("reason", "agent_execute 返回 failed"), "retries": 0})
             else:
                 output = json.dumps(result, ensure_ascii=False)[:500]
-                if not output.strip():
-                    state["step_results"].append({"agent": step["agent"], "status": "failed", "output": "", "error": "agent_execute 返回空 output", "retries": 0})
+                # `json.dumps({})` is "{}" — non-empty, so the old `not output.strip()` guard never
+                # fired and an empty payload was recorded as `ok`. Judge emptiness on the VALUE.
+                meaningful = bool(result) and (bool(result.get("output") or result.get("text"))
+                                               if isinstance(result, dict) else bool(str(result).strip()))
+                if not meaningful:
+                    state["step_results"].append({"agent": step["agent"], "status": "failed", "output": "",
+                                                  "error": f"agent_execute 返回空 output（payload: {output[:120]}）", "retries": 0})
                 else:
                     state["step_results"].append({"agent": step["agent"], "status": "ok", "output": output, "retries": 0})
 

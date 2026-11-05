@@ -23,7 +23,53 @@
 import { existsSync } from 'node:fs'
 import { Config, resolveSettings, settingsView } from './config.js'
 import { runTool } from './spawn.js'
-import { TOOL_NAMES, createTools } from './tools.js'
+import { TOOL_NAMES, createTools, scorePeerText } from './tools.js'
+
+/** Peers a panel review asks, in the order ETO itself uses for T1. */
+const REVIEW_PEERS = ['researcher', 'coder', 'auditor']
+/** A finished job is kept this long so a late poll still finds it. */
+const REVIEW_TTL_MS = 10 * 60_000
+/** Live review jobs, keyed by id. Process-scoped: a panel reload rejoins by id, a host restart drops them. */
+const reviewJobs = new Map()
+
+/**
+ * Start one review in the background and return its handle immediately.
+ *
+ * Each peer is asked independently and its state is published as soon as it settles, so the panel
+ * can show "2/3 done, 12s" — a real count of peers that answered, never a fabricated stage.
+ * Cancellation aborts every in-flight model call.
+ */
+function startReviewJob({ ctx, provider, model, plan, peers }) {
+  const id = Math.random().toString(36).slice(2) + Date.now().toString(36)
+  const controller = new AbortController()
+  const job = {
+    id,
+    startedAt: Date.now(),
+    done: false,
+    cancelled: false,
+    error: null,
+    peers: peers.map(peer => ({ peer, state: 'pending', text: null, error: null })),
+    cancel: () => { controller.abort(); job.cancelled = true; job.done = true },
+  }
+  reviewJobs.set(id, job)
+  const sweep = setTimeout(() => reviewJobs.delete(id), REVIEW_TTL_MS)
+  sweep.unref?.()
+
+  Promise.all(job.peers.map(async slot => {
+    try {
+      const text = await scorePeerText({ ctx, provider, model, peer: slot.peer, plan, signal: controller.signal })
+      slot.state = 'ok'
+      slot.text = text
+    } catch (error) {
+      slot.state = controller.signal.aborted ? 'cancelled' : 'failed'
+      slot.error = error instanceof Error ? error.message : String(error)
+    }
+  })).then(() => { job.done = true }).catch(error => {
+    job.error = error instanceof Error ? error.message : String(error)
+    job.done = true
+  })
+  return job
+}
 
 export const name = 'dsh-eto'
 /** `tools` is required: registration is the point of the plugin. */
@@ -251,6 +297,77 @@ export function apply(ctx, entryConfig) {
           // Workbench: run a whitelisted read/eval tool from the panel. The
           // whitelist is deliberate — write-heavy or session-bound tools
           // (agent_execute, eto_peer_score) stay model-facing only.
+          // Panel-side peer scoring. The panel has no `exec.agent`, so the route can only come
+          // from Settings (peerScoreProvider/Model) — that is the documented requirement for
+          // consensus-from-panel. Returns the model's raw reply so ETO's own parser runs.
+          // Async consensus: POST starts a job, GET /review/<id> polls it. The panel cannot hold a
+          // request open for a minute with no feedback, and a killed HTTP request used to lose the
+          // whole review. Jobs are in-memory (process-scoped) and pruned after REVIEW_TTL_MS.
+          if (sub === '/review' && req.method === 'POST') {
+            const chunks = []
+            for await (const chunk of req) chunks.push(chunk)
+            let body = {}
+            try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { /* handled below */ }
+            const plan = typeof body.plan === 'string' ? body.plan.trim() : ''
+            if (plan === '') { json(res, 400, { _error: true, error: 'review needs a non-empty plan' }); return }
+            const settings = settingsRef()
+            const provider = String(settings.peerScoreProvider || '').trim()
+            const model = String(settings.peerScoreModel || '').trim()
+            if (provider === '' || model === '') {
+              json(res, 409, { _error: true, error: 'panel scoring needs peerScoreProvider and peerScoreModel in the ETO settings page' })
+              return
+            }
+            const job = startReviewJob({ ctx, provider, model, plan, peers: REVIEW_PEERS })
+            json(res, 202, { id: job.id, peers: REVIEW_PEERS, startedAt: job.startedAt })
+            return
+          }
+          if (sub.startsWith('/review/') && req.method === 'GET') {
+            const job = reviewJobs.get(sub.slice('/review/'.length))
+            if (job === undefined) { json(res, 404, { _error: true, error: 'unknown or expired review job' }); return }
+            json(res, 200, {
+              id: job.id,
+              elapsedMs: Date.now() - job.startedAt,
+              done: job.done,
+              cancelled: job.cancelled,
+              peers: job.peers.map(p => ({ peer: p.peer, state: p.state, text: p.text ?? null, error: p.error ?? null })),
+              error: job.error ?? null,
+            })
+            return
+          }
+          if (sub.startsWith('/review/') && req.method === 'DELETE') {
+            const job = reviewJobs.get(sub.slice('/review/'.length))
+            if (job === undefined) { json(res, 404, { _error: true, error: 'unknown or expired review job' }); return }
+            job.cancel?.()
+            json(res, 200, { id: job.id, cancelled: true })
+            return
+          }
+          if (sub === '/peer-score' && req.method === 'POST') {
+            const chunks = []
+            for await (const chunk of req) chunks.push(chunk)
+            let body = {}
+            try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { /* handled below */ }
+            const plan = typeof body.plan === 'string' ? body.plan.trim() : ''
+            const peer = typeof body.peer === 'string' && body.peer.trim() !== '' ? body.peer.trim() : 'coder'
+            if (plan === '') { json(res, 400, { _error: true, error: 'peer-score needs a non-empty plan' }); return }
+            const settings = settingsRef()
+            const provider = String(settings.peerScoreProvider || '').trim()
+            const model = String(settings.peerScoreModel || '').trim()
+            if (provider === '' || model === '') {
+              json(res, 409, {
+                _error: true,
+                error: 'panel scoring needs peerScoreProvider and peerScoreModel in the ETO settings page '
+                  + '(a panel request carries no session route to inherit)',
+              })
+              return
+            }
+            try {
+              const text = await scorePeerText({ ctx, provider, model, peer, plan, timeoutMs: settings.peerScoreTimeoutMs })
+              json(res, 200, { _text: text, provider, model, peer })
+            } catch (error) {
+              json(res, 502, { _error: true, error: error instanceof Error ? error.message : String(error) })
+            }
+            return
+          }
           if (sub === '/run' && req.method === 'POST') {
             // eto_consensus belongs here: it is the workbench's headline action. It is slow
             // (real LLM calls through ETO's own providers) but it is read-only — it scores a
