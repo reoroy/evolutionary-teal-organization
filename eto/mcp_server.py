@@ -131,6 +131,14 @@ def agent_execute(task: str, system: str = "", skills: list[str] | None = None, 
         output = _call_provider(provider, model, full_system, task)
     except Exception as e:
         return json.dumps({"status": "failed", "agent": agent, "output": "", "reason": f"provider {provider} 抛出异常: {e}"}, ensure_ascii=False)
+    # A provider failure now travels as a marked string, not as "". Checking `not output` alone
+    # would let the marker through as a normal `status: ok` output — the workflow would then record
+    # a step whose entire "answer" is an error blob.
+    from eto.stitches.consensus.vote import _parse_provider_error
+    failure = _parse_provider_error(output)
+    if failure is not None:
+        return json.dumps({"status": "failed", "agent": agent, "output": "",
+                           "reason": f"provider {failure.get('provider')}/{failure.get('model')} 不可用: {failure.get('reason')}"}, ensure_ascii=False)
     if not output:
         return json.dumps({"status": "failed", "agent": agent, "output": "", "reason": f"provider {provider} 返回空输出（服务未启动或不可用）"}, ensure_ascii=False)
     return json.dumps({"status": "ok", "agent": agent, "output": output}, ensure_ascii=False)

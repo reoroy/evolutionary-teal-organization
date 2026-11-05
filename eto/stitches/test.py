@@ -111,10 +111,11 @@ all_ok = all_ok and p
 os.environ.pop("ETO_ELECTION_STATE", None)
 os.unlink(_ELEC_STATE)
 
-# 空 peers → avg_score=0.6
+# 空 peers → degraded（没有任何 peer 评过分，不能凭空给 0.6）
+# 旧断言要 0.6：那正是「无声假成功」的一种 —— 空输入也能得出一个看起来可执行的分数。
 r = run(ROOT / "consensus/vote.py", {"fn": "peer_review", "args": ["plan", []]})
-p = ok(r) and '0.6' in r.stdout
-print(f"{OK_MARK if p else FAIL_MARK} vote empty peers    avg_score=0.6")
+p = ok(r) and '"status": "degraded"' in r.stdout and '"final_score": null' in r.stdout
+print(f"{OK_MARK if p else FAIL_MARK} vote empty peers    degraded, no fake score")
 all_ok = all_ok and p
 
 # 空 steps → outputs=[]

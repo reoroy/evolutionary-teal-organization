@@ -438,18 +438,7 @@ window.__ModuleLoader__.load({
       flow: { zh: '完整流程', en: 'Full flow' },
     }
 
-    /** Seed a new conversation with a workbench result. Requires the client `agents` service. */
-    async function importToConversation(ctx, text) {
-      const agents = ctx.get('agents')
-      if (!agents || typeof agents.createSession !== 'function') {
-        throw new Error('当前客户端没有 agents.createSession，无法导入对话')
-      }
-      const created = await agents.createSession({ initialMessage: text })
-      if (created && typeof agents.enter === 'function') agents.enter(created)
-      return created
-    }
-
-    function TimelineEntry({ entry, label, onRerun, onImport, importing }) {
+    function TimelineEntry({ entry, label, onRerun, onCopy, copied }) {
       const [open, setOpen] = React.useState(false)
       const color = entry.ok ? 'var(--dsw-alias-label-positive, #2ecc71)' : 'var(--dsw-alias-label-critical, #e74c3c)'
       const when = new Date(entry.at)
@@ -470,8 +459,10 @@ window.__ModuleLoader__.load({
             JSON.stringify(entry.value ?? {}, null, 1).slice(0, 4000)),
           h('div', { style: { display: 'flex', gap: '6px', marginTop: '8px' } },
             h('button', { style: styles.button, onClick: () => onRerun(entry) }, '↻ 重跑'),
-            h('button', { style: styles.button, disabled: importing, onClick: () => onImport(entry) },
-              importing ? '…' : (entry.ok ? '导入到对话' : '导入错误到对话')))) : null)
+            h('button', { style: styles.button, onClick: () => onCopy(entry) },
+              copied === entry.at ? '已复制 ✓' : '复制 JSON'),
+            h('span', { style: { ...styles.muted, fontSize: '11px', marginLeft: '6px' } },
+              '（面板无法新建会话，粘到对话里即可）'))) : null)
     }
 
     function InfoPage(props) {
@@ -481,7 +472,8 @@ window.__ModuleLoader__.load({
       const [task, setTask] = React.useState('')
       const [running, setRunning] = React.useState('')
       const [history, setHistory] = React.useState(() => readHistory())
-      const [importing, setImporting] = React.useState(0)
+      const [copied, setCopied] = React.useState(0)
+      const reviewJobRef = React.useRef(null)
       const [notice, setNotice] = React.useState('')
       const eto = (data && data.eto) || {}
       const ok = Boolean(data && data.ok)
@@ -517,13 +509,52 @@ window.__ModuleLoader__.load({
           } else if (action === 'clarify') {
             push({ action, input, at: started, ...(await call('eto_clarify', { task: input })) })
           } else if (action === 'consensus') {
-            setNotice('评审会真调 LLM，可能要几十秒…')
-            push({ action, input, at: started, ...(await call('eto_consensus', { plan: input })) })
+            // Async + poll. The panel shows only facts: elapsed time and how many peers answered.
+            // No fabricated "stage 2/3" — ETO does not report per-stage progress.
+            const startRes = await fetch(API + '/review', {
+              method: 'POST', headers: { ...HEADERS, 'content-type': 'application/json' },
+              body: JSON.stringify({ plan: input }),
+            })
+            const started2 = await startRes.json().catch(() => ({ _error: true, error: 'HTTP ' + startRes.status }))
+            if (started2._error) {
+              push({ action, input, at: started, ok: false, error: started2.error, latencyMs: Date.now() - started })
+            } else {
+              const jobId = started2.id
+              reviewJobRef.current = jobId
+              let final = null
+              for (;;) {
+                if (reviewJobRef.current !== jobId) { setNotice('已取消'); break }   // user cancelled
+                await new Promise(r => setTimeout(r, 1000))
+                const poll = await fetch(API + '/review/' + jobId, { headers: HEADERS }).then(r => r.json()).catch(() => null)
+                if (!poll) continue
+                const okCount = poll.peers.filter(p => p.state === 'ok').length
+                const doneCount = poll.peers.filter(p => p.state !== 'pending').length
+                setNotice('评审中 ' + Math.round(poll.elapsedMs / 1000) + 's · ' + doneCount + '/' + poll.peers.length +
+                  ' 已返回（成功 ' + okCount + '）')
+                if (poll.done) { final = poll; break }
+              }
+              if (final) {
+                const anyOk = final.peers.some(p => p.state === 'ok')
+                push({ action, input, at: started, ok: anyOk, latencyMs: final.elapsedMs,
+                  error: anyOk ? null : (final.peers.find(p => p.error)?.error || '所有 peer 均失败'),
+                  value: { peers: final.peers.map(p => ({ peer: p.peer, state: p.state, text: p.text, error: p.error })) } })
+              }
+              reviewJobRef.current = null
+              setNotice('')
+            }
           } else if (action === 'flow') {
             setNotice('完整流程：路由 → 评审 → 记忆…')
             const route = await call('eto_route', { task: input })
             push({ action: 'route', input, at: started, ...route })
-            const review = await call('eto_consensus', { plan: input })
+            const peers = ['researcher', 'coder', 'auditor']
+            const results = await Promise.all(peers.map(async peer => {
+              const r = await fetch(API + '/peer-score', {
+                method: 'POST', headers: { ...HEADERS, 'content-type': 'application/json' },
+                body: JSON.stringify({ peer, plan: input }),
+              })
+              return { peer, out: await r.json().catch(() => ({ _error: true, error: 'HTTP ' + r.status })) }
+            }))
+            const review = { ok: results.some(r => !r.out._error), value: { peers: results.map(r => ({ peer: r.peer, ok: !r.out._error, text: r.out._text || null, error: r.out.error || null })) }, error: results.every(r => r.out._error) ? (results[0].out.error || 'all peers failed') : null, latencyMs: 0 }
             push({ action: 'consensus', input, at: Date.now(), ...review })
             await call('eto_memory_write', {
               key: 'flow:last',
@@ -538,18 +569,18 @@ window.__ModuleLoader__.load({
 
       const rerun = entry => { setTask(entry.input || ''); runAction(entry.action) }
 
-      const importEntry = async entry => {
-        setImporting(entry.at)
+      const copyEntry = async entry => {
+        const body = entry.ok
+          ? 'ETO 的「' + labelOf(entry.action) + '」结果：\n\n输入：' + entry.input +
+            '\n\n结果：\n```json\n' + JSON.stringify(entry.value, null, 2).slice(0, 3000) + '\n```'
+          : 'ETO 的「' + labelOf(entry.action) + '」失败了：\n\n输入：' + entry.input + '\n\n错误：' + entry.error
         try {
-          const body = entry.ok
-            ? 'ETO 的「' + labelOf(entry.action) + '」结果，请据此继续推进。\n\n输入：' + entry.input +
-              '\n\n结果：\n```json\n' + JSON.stringify(entry.value, null, 2).slice(0, 3000) + '\n```'
-            : 'ETO 的「' + labelOf(entry.action) + '」失败了，帮我排查。\n\n输入：' + entry.input + '\n\n错误：' + entry.error
-          await importToConversation(ctx, body)
-          setNotice('已导入到新会话')
+          await navigator.clipboard.writeText(body)
+          setCopied(entry.at)
+          setTimeout(() => setCopied(0), 1500)
         } catch (e) {
-          setNotice('导入失败：' + (e && e.message ? e.message : String(e)))
-        } finally { setImporting(0) }
+          setNotice('复制失败（浏览器拒绝）：' + (e && e.message ? e.message : String(e)))
+        }
       }
 
       const pill = { fontSize: '11px', padding: '3px 9px', borderRadius: '999px', border: '1px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)' }
@@ -574,7 +605,17 @@ window.__ModuleLoader__.load({
           }),
           h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
             actionBtn('route'), actionBtn('clarify'), actionBtn('consensus'), actionBtn('flow', true)),
-          notice ? h('div', { style: { ...styles.muted, fontSize: '12px' } }, notice) : null),
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', minHeight: '20px' } },
+            notice ? h('span', { style: { ...styles.muted, fontSize: '12px' } }, notice) : null,
+            reviewJobRef.current ? h('button', {
+              style: { ...styles.button, fontSize: '11px' },
+              onClick: async () => {
+                const id = reviewJobRef.current
+                reviewJobRef.current = null
+                if (id) await fetch(API + '/review/' + id, { method: 'DELETE', headers: HEADERS }).catch(() => {})
+                setNotice('已取消')
+              },
+            }, '取消') : null)),
         h('div', { style: { padding: '0 16px 8px', display: 'flex', alignItems: 'center', gap: '10px' } },
           h('div', { style: styles.cardTitle }, '最近'),
           h('span', { style: { flex: 1 } }),
@@ -587,7 +628,7 @@ window.__ModuleLoader__.load({
             ? h('div', { style: styles.muted }, '还没有记录。上面写点什么，点个动作试试。')
             : history.map(entry => h(TimelineEntry, {
                 key: entry.at, entry, label: labelOf(entry.action),
-                onRerun: rerun, onImport: importEntry, importing: importing === entry.at,
+                onRerun: rerun, onCopy: copyEntry, copied,
               }))))
     }
 

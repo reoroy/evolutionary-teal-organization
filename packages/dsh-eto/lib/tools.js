@@ -328,6 +328,52 @@ export function resolveScoreRoute(settings, agent) {
 }
 
 /**
+ * Score one peer from a panel request, where no `exec.agent` exists.
+ *
+ * The panel cannot inherit the session's route (it is a bare HTTP handler), so the caller must
+ * name a provider/model explicitly — that is the documented requirement for consensus-from-panel.
+ * Returns the RAW model text: ETO's own `_score_single` parses it, so this endpoint never has to
+ * agree with ETO about the reply shape.
+ *
+ * Throws (never returns a default score): a silent 0.5 here is exactly the "fake success" the
+ * consensus path is being fixed for.
+ */
+export async function scorePeerText({ ctx, provider, model, peer, plan, timeoutMs = 90_000, signal }) {
+  const llm = ctx.get('llm')
+  if (llm === undefined) throw new Error('the llm service is not composed in this host; cannot score from the panel')
+  const system = PEER_PROMPTS[peer] ?? PEER_PROMPTS.coder
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error(`panel peer score exceeded ${timeoutMs} ms`)), timeoutMs)
+  if (signal !== undefined) {
+    if (signal.aborted) controller.abort(signal.reason)
+    else signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true })
+  }
+  timer.unref?.()
+  try {
+    const assembler = new BlockAssembler()
+    const stream = llm.stream({
+      provider,
+      model,
+      system,
+      messages: [createUserMessage({
+        content: [{ type: 'text', text: `${SCORE_INSTRUCTION}\n\n计划:\n${plan}` }],
+        source: { kind: 'plugin', plugin: 'dsh-eto' },
+      })],
+      maxTokens: 800,
+      signal: controller.signal,
+    })
+    for await (const chunk of stream) assembler.push(chunk)
+    const finish = assembler.finish
+    if (finish !== undefined && finish.kind === 'error') {
+      throw new Error(`panel peer score failed on ${provider}/${model}: ${finish.error?.message ?? 'stream error'}`)
+    }
+    const text = assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('')
+    if (text.trim() === '') throw new Error(`panel peer score returned no text (provider ${provider}/${model})`)
+    return text
+  } finally { clearTimeout(timer) }
+}
+
+/**
  * Pull the first JSON object out of a model reply, tolerating a ```json fence.
  * @param {string} text
  * @returns {object | null}
