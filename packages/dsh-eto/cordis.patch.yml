@@ -1,0 +1,32 @@
+# dsh-eto bundle layer: one plugin entry, no MCP client and no absolute path.
+#
+# The plugin registers its tools directly on ctx.tools (names without the
+# `mcp__eto__` prefix) and spawns `<venv>/bin/python lib/eto_runner.py <tool>`
+# itself, so this patch needs nothing but the entry.
+#
+# Where ETO lives is configuration, resolved at call time (settings page or the
+# environment), never a path baked in here:
+#   DSH_ETO_REPO    ETO checkout        (default ~/src/eto)
+#   DSH_ETO_VENV    its virtualenv      (default <repo>/.venv)
+#   DSH_ETO_PYTHON  its interpreter     (default <venv>/bin/python)
+#
+# A broken ETO does not take the session down: the plugin still loads, the tool
+# calls report what is missing, and the sidebar panel shows the same diagnosis.
+- insert:
+    - id: eto
+      name: 'dsh-eto'
+      config:
+        # Only the ETO flow the panels and the plan/repair path actually need.
+        # Full list is TOOL_NAMES in lib/tools.js; empty `[]` means every tool.
+        # Dropped from the default surface (re-enable by naming them here):
+        #   eto_file_status/update/release — multi-agent file locks
+        #   agent_execute                  — heavy peer dispatch
+        #   eto_peer_config, eto_memory_list, eto_feedback
+        enabledTools:
+          - eto_consensus
+          - eto_route
+          - eto_peer_score
+          - eto_clarify
+          - eto_review
+          - eto_memory_write
+          - eto_memory_read
