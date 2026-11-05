@@ -7,7 +7,10 @@ import logging
 logger = logging.getLogger("eto.stitches.consensus.vote")
 
 OLLAMA_URL = "http://localhost:11434"
-MODEL = "qwen2.5-coder:7b"
+# `qwen2.5-coder:7b` was the historical default but is not installed on this machine, so every peer
+# silently degraded. Prefer a model that actually exists locally; override per-peer in
+# ~/.pi/eto-config.json when a different one is wanted.
+MODEL = os.environ.get("ETO_OLLAMA_MODEL", "qwen3-8b-arb:latest")
 CLAUDE_PROXY = os.environ.get("ANTHROPIC_BASE_URL", "http://127.0.0.1:15721")
 
 PEER_SYSTEM_PROMPTS = {
