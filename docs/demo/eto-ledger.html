@@ -249,10 +249,12 @@ const RECORDS = [
         concern: '缺乏对代码结构和潜在错误的考虑',
         suggestion: '应进行单元测试验证修改后的代码行为，并评估代码可维护性' },
       { name: 'coder', score: null, state: 'failed',
-        concern: 'provider 无响应：TimeoutError: timed out（_call_ollama 30s 硬超时）',
+        concern: '[coder] provider ollama/qwen3-8b-arb:latest 无响应: TimeoutError: timed out',
+        why: 'vote.py:87 的 urlopen(timeout=30) 是单次调用预算，8B 模型常超过它',
         suggestion: '' },
       { name: 'auditor', score: null, state: 'failed',
-        concern: 'provider 无响应：TimeoutError: timed out（同一 30s 预算，串行排队）',
+        concern: '[auditor] provider ollama/qwen3-8b-arb:latest 无响应: TimeoutError: timed out',
+        why: 'peer 串行（vote.py:289），前一个慢，后一个预算也被吃掉',
         suggestion: '' }
     ],
     actions: ['2/3 个 peer 无有效评分（coder, auditor），结论仅基于其余 1 个'],
@@ -446,6 +448,7 @@ function peerCard (peer) {
     </div>
     <div class="bar"><i style="width:${pct}%;background:${color}"></i></div>
     <div class="field"><span class="k">疑虑</span><span class="v ${failed ? 'err' : ''}">${esc(peer.concern)}</span></div>
+    ${peer.why ? `<div class="field"><span class="k">为什么</span><span class="v">${esc(peer.why)}</span></div>` : ''}
     ${peer.suggestion ? `<div class="field"><span class="k">建议</span><span class="v">${esc(peer.suggestion)}</span></div>` : ''}
     ${peer.raw ? `<div class="field"><span class="k">原文</span><span class="v err">${esc(peer.raw)}</span></div>` : ''}
   </article>`
