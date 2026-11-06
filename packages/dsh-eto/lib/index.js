@@ -22,6 +22,7 @@
  */
 import { existsSync } from 'node:fs'
 import { Config, resolveSettings, settingsView } from './config.js'
+import { listReviews, readReview } from './reviews.js'
 import { runTool } from './spawn.js'
 import { TOOL_NAMES, createTools, scorePeerText } from './tools.js'
 
@@ -396,6 +397,19 @@ export function apply(ctx, entryConfig) {
               timedOut: result.timedOut === true,
               latencyMs: Date.now() - started,
             })
+            return
+          }
+          // Review ledger: the panel is read-only, so the host serves the on-disk
+          // records `eto_consensus` wrote (see tools.js). List returns newest
+          // first; the detail route answers by the record's own ledger id.
+          if (sub === '/reviews' && req.method === 'GET') {
+            json(res, 200, { reviews: listReviews() })
+            return
+          }
+          if (sub.startsWith('/reviews/') && req.method === 'GET') {
+            const record = readReview(sub.slice('/reviews/'.length))
+            if (record === null) { json(res, 404, { _error: true, error: 'unknown review' }); return }
+            json(res, 200, record)
             return
           }
           json(res, 404, { error: 'unknown route', url: req.url })

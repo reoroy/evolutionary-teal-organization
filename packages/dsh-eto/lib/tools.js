@@ -20,6 +20,7 @@
  */
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { resolveSettings } from './config.js'
+import { persistReview } from './reviews.js'
 import { runTool } from './spawn.js'
 
 /** Tool names in registration order; the sidebar and status page read this list. */
@@ -115,7 +116,7 @@ export function createTools({ ctx, settings }) {
       render: options.render ?? renderJson(`${tool}:`),
     },
     async execute(args, exec) {
-      return call(tool, args, exec)
+      return options.execute ? options.execute(args, exec) : call(tool, args, exec)
     },
   })
 
@@ -137,6 +138,25 @@ export function createTools({ ctx, settings }) {
         type: 'text',
         text: `eto_consensus: ${value.status} (score ${value.final_score})\n${JSON.stringify(value, null, 2)}`,
       }],
+      // Persist the review for the panel ledger the moment it completes. This is
+      // best-effort: a lost write must never turn a real consensus into a tool
+      // error. The result the model sees is unchanged — only the ledger gains a
+      // record (audit_id, plan, elapsed time) beside ETO's own result shape.
+      execute: async (args, exec) => {
+        const plan = typeof args.plan === 'string' ? args.plan.trim() : ''
+        const started = Date.now()
+        const result = await runTool({ settings: settings(), tool: 'eto_consensus', args, signal: exec.signal })
+        if (!result.ok) throw failureOf('eto_consensus', result)
+        const value = result.value
+        const written = persistReview({
+          at: new Date(started).toISOString(),
+          plan,
+          elapsedMs: result.durationMs ?? (Date.now() - started),
+          ...value,
+        })
+        if (!written.ok) ctx.logger?.warn?.(`dsh-eto: could not persist consensus review: ${written.error}`)
+        return value
+      },
     }),
 
     eto('eto_route', {
