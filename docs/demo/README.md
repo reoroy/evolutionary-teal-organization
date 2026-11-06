@@ -29,7 +29,8 @@
 |:--|:--|
 | `shots/before-panel.png` | 现有面板：输入框 + 4 个按钮 + 空时间线（全新浏览器 profile，所以时间线是空的） |
 | `shots/before-review-409.png` | 现有面板点「评审」：462ms 返回 409，`panel scoring needs peerScoreProvider and peerScoreModel in the ETO settings page` |
-| `shots/after-ledger-r1.png` | 本 demo 的台账 + 详情 |
+| `shots/after-ledger-r1.png` | 本 demo 的台账 + 详情（r1：一个 peer 掉队） |
+| `shots/after-ledger-r2.png` | 本 demo 的 r2：两个 peer 超时，错误原文与代码层原因分两栏 |
 | `shots/after-evidence.png` | 本 demo 的「依据」页 |
 | `shots/after-trigger.png` | 本 demo 的「触发」页 |
 
