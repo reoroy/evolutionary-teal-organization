@@ -23,7 +23,7 @@
 import { existsSync } from 'node:fs'
 import { Config, resolveSettings, settingsView } from './config.js'
 import { runTool } from './spawn.js'
-import { TOOL_NAMES, createTools, scorePeerText, callLlmRaw } from './tools.js'
+import { TOOL_NAMES, createTools, scorePeerText } from './tools.js'
 
 /** Peers a panel review asks, in the order ETO itself uses for T1. */
 const REVIEW_PEERS = ['researcher', 'coder', 'auditor']
@@ -215,7 +215,7 @@ export function apply(ctx, entryConfig) {
   // running config without remounting the plugin. Registration therefore has to
   // be reconciled in place: `syncTools` adds and removes only the difference, so
   // a save takes effect on the next model request instead of on the next restart.
-  const { tools: definitions, dsh: dshEndpointApi } = createTools({ ctx, settings: settingsRef })
+  const definitions = createTools({ ctx, settings: settingsRef })
   const syncTools = () => {
     const enabled = settingsRef().enabledTools
     const unknown = enabled.filter(name => !TOOL_NAMES.includes(name))
@@ -259,14 +259,6 @@ export function apply(ctx, entryConfig) {
   // Routes ride an optional webServer sub-fiber: a headless host composes no web
   // server and keeps the tools alone.
   ctx.inject(['webServer'], webCtx => {
-    // The web server's port is OS-assigned, so runners learn it through the environment:
-    // ETO consensus peers vote through the host's LLM service as a virtual provider.
-    try {
-      const port = webCtx.webServer.port
-      if (port) dshEndpointApi.setDshEndpoint(`http://127.0.0.1:${port}${API}`)
-    } catch (error) {
-      ctx.logger?.warn?.(`dsh-eto: could not expose DSH endpoint to runners: ${error instanceof Error ? error.message : String(error)}`)
-    }
     registerRoute(webCtx, {
       kind: 'prefix',
       path: API,
@@ -349,30 +341,6 @@ export function apply(ctx, entryConfig) {
             json(res, 200, { id: job.id, cancelled: true })
             return
           }
-          // Virtual provider: one thin LLM call through the host's routing. Local-only and
-          // header-guarded like every other route here. ETO's consensus treats this endpoint as
-          // just another provider (`dsh`) so peers can vote from different architectures.
-          if (sub === '/llm' && req.method === 'POST') {
-            const chunks = []
-            for await (const chunk of req) chunks.push(chunk)
-            let body = {}
-            try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { /* handled below */ }
-            const provider = typeof body.provider === 'string' ? body.provider.trim() : ''
-            const model = typeof body.model === 'string' ? body.model.trim() : ''
-            const prompt = typeof body.prompt === 'string' ? body.prompt : ''
-            const system = typeof body.system === 'string' ? body.system : ''
-            if (provider === '' || model === '' || prompt.trim() === '') {
-              json(res, 400, { _error: true, error: 'llm needs non-empty provider, model and prompt' })
-              return
-            }
-            try {
-              const text = await callLlmRaw({ ctx, provider, model, system, prompt, maxTokens: Number(body.maxTokens) || 1024, timeoutMs: Number(body.timeoutMs) || 120_000 })
-              json(res, 200, { _text: text, provider, model })
-            } catch (error) {
-              json(res, 502, { _error: true, error: error instanceof Error ? error.message : String(error) })
-            }
-            return
-          }
           if (sub === '/peer-score' && req.method === 'POST') {
             const chunks = []
             for await (const chunk of req) chunks.push(chunk)
@@ -382,15 +350,13 @@ export function apply(ctx, entryConfig) {
             const peer = typeof body.peer === 'string' && body.peer.trim() !== '' ? body.peer.trim() : 'coder'
             if (plan === '') { json(res, 400, { _error: true, error: 'peer-score needs a non-empty plan' }); return }
             const settings = settingsRef()
-            // Explicit per-peer routing wins (ETO fusion passes a different provider per peer);
-            // the settings pin is the fallback for panel requests that name no route.
-            const provider = String(body.provider || settings.peerScoreProvider || '').trim()
-            const model = String(body.model || settings.peerScoreModel || '').trim()
+            const provider = String(settings.peerScoreProvider || '').trim()
+            const model = String(settings.peerScoreModel || '').trim()
             if (provider === '' || model === '') {
               json(res, 409, {
                 _error: true,
-                error: 'peer-score needs provider/model in the request body, or peerScoreProvider '
-                  + 'and peerScoreModel pinned in the ETO settings page',
+                error: 'panel scoring needs peerScoreProvider and peerScoreModel in the ETO settings page '
+                  + '(a panel request carries no session route to inherit)',
               })
               return
             }

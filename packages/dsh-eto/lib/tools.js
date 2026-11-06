@@ -99,20 +99,9 @@ function failureOf(tool, result) {
  * @returns {Array<object>} tool definitions for `ctx.tools.register()`.
  */
 export function createTools({ ctx, settings }) {
-  /**
-   * The plugin's own HTTP API base (http://127.0.0.1:<port>/@dsh-eto/api), set by apply()'s
-   * webServer injection. Runners reach it as ETO_DSH_ENDPOINT so consensus peers can vote through
-   * the host's LLM service (per-peer providers) instead of one local model for all of them.
-   */
-  let dshEndpoint = null
-  const setDshEndpoint = url => { if (url) dshEndpoint = url }
-  const getDshEndpoint = () => dshEndpoint
-
   /** Run one ETO tool through the child process and unwrap its value. */
   const call = async (tool, args, exec) => {
-    const base = childEnv(settings(), process.env)
-    const env = dshEndpoint ? { ...base, ETO_DSH_ENDPOINT: dshEndpoint } : base
-    const result = await runTool({ settings: settings(), tool, args, signal: exec.signal, env })
+    const result = await runTool({ settings: settings(), tool, args, signal: exec.signal })
     if (!result.ok) throw failureOf(tool, result)
     return result.value
   }
@@ -130,8 +119,7 @@ export function createTools({ ctx, settings }) {
     },
   })
 
-  const api = { setDshEndpoint, getDshEndpoint }
-  const tools = [
+  return [
     eto('eto_consensus', {
       description: 'ETO 同侪共识评审：对执行计划做评分→审议→终审三阶段，返回 status / final_score / votes / deliberation / actions。默认 peer 为 researcher、coder、auditor，评分走 ETO 配置的 provider（可能是 Ollama，慢时请设更长超时）。',
       parameters: objectSchema({
@@ -313,7 +301,6 @@ export function createTools({ ctx, settings }) {
       },
     },
   ]
-  return { tools, dsh: api }
 }
 
 /**
@@ -338,41 +325,6 @@ export function resolveScoreRoute(settings, agent) {
   throw new Error(
     'eto_peer_score: no model route could be resolved — this session has no request header yet and the plugin settings name no peerScoreProvider/peerScoreModel',
   )
-}
-
-/**
- * One thin LLM call through the host's routing — the virtual-provider surface ETO's consensus
- * votes through when a peer names `provider: "dsh"`. No peer/scoring semantics here: ETO owns
- * the prompt and parses the reply; this is just the pipe. Local-only routes guard the endpoint.
- */
-export async function callLlmRaw({ ctx, provider, model, system = '', prompt, maxTokens = 1024, timeoutMs = 120_000, signal }) {
-  const llm = ctx.get('llm')
-  if (llm === undefined) throw new Error('the llm service is not composed in this host; cannot route the call')
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(new Error(`llm call exceeded ${timeoutMs} ms`)), timeoutMs)
-  timer.unref?.()
-  try {
-    const assembler = new BlockAssembler()
-    const stream = llm.stream({
-      provider,
-      model,
-      ...(system ? { system } : {}),
-      messages: [createUserMessage({
-        content: [{ type: 'text', text: prompt }],
-        source: { kind: 'plugin', plugin: 'dsh-eto' },
-      })],
-      maxTokens,
-      signal: controller.signal,
-    })
-    for await (const chunk of stream) assembler.push(chunk)
-    const finish = assembler.finish
-    if (finish !== undefined && finish.kind === 'error') {
-      throw new Error(`llm call failed on ${provider}/${model}: ${finish.error?.message ?? 'stream error'}`)
-    }
-    const text = assembler.blocks().filter(block => block.type === 'text').map(block => block.text).join('')
-    if (text.trim() === '') throw new Error(`llm call returned no text (provider ${provider}/${model})`)
-    return text
-  } finally { clearTimeout(timer) }
 }
 
 /**
