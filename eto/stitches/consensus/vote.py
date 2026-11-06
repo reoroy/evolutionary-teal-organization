@@ -21,10 +21,17 @@ PEER_SYSTEM_PROMPTS = {
 
 # ── Peer Provider 配置 ─────────────────────────────────
 
+#: 融合（MoA 式）默认配置：**每个 peer 走不同架构**，值随可用额度轮换。
+#: 架构差异越大效果越好 —— 本地 Qwen 密集 × 云端 GLM MoE × 云端 DeepSeek 系。
+#: `dsh` 是虚拟供应商：经插件端点回落到 DSH 宿主的 llm 服务，模型串是 `provider/model`。
+#: 覆盖方式：~/.pi/eto-config.json 的 {"peers": {"coder": {"provider": "...", "model": "..."}}}
 DEFAULT_PEER_CONFIG = {
+    # 本机 Qwen（免费、无限、与云端不同源）
     "researcher": {"provider": "ollama", "model": MODEL},
-    "coder": {"provider": "ollama", "model": MODEL},
-    "auditor": {"provider": "ollama", "model": MODEL},
+    # 云端 GLM（智谱 MoE 架构，便宜）
+    "coder": {"provider": "dsh", "model": "loomy/glm-5.3-flash"},
+    # 云端另一家（trae 通道），与上面不同供应商
+    "auditor": {"provider": "dsh", "model": "trae/glm-5.3-flash"},
     "终审仲裁者": {"provider": "ollama", "model": MODEL},
 }
 
@@ -48,6 +55,9 @@ def _load_peer_config() -> dict:
 #: `_score_single` recognises it and marks the vote degraded instead of keeping a default 0.5.
 _PROVIDER_ERROR = "__ETO_PROVIDER_ERROR__"
 
+#: 前缀：dsh 端点缺失时回落到本机模型，值为回落模型的原文。
+_FALLBACK_MARK = "__ETO_DSH_FALLBACK__"
+
 
 def _provider_error(provider: str, model: str, reason: str) -> str:
     """Encode a provider failure so the caller can tell it apart from a real (empty) answer."""
@@ -65,6 +75,48 @@ def _parse_provider_error(raw: str) -> dict | None:
         return {"provider": "?", "model": "?", "reason": f"unparsable provider error: {raw[:120]}"}
 
 
+def _call_dsh(model: str, system: str, prompt: str) -> str:
+    """通过 DSH 宿主的 /api/llm 端点调用任意已配置 provider（虚拟供应商）。
+
+    model 形如 "loomy/glm-5.3-flash"：斜杠前是 provider，之后是模型 id。
+    端点地址由插件通过 ETO_DSH_ENDPOINT 注入（webServer 端口是 OS 分配的）。
+    失败返回 _provider_error 结构，绝不返回空串——那会让上层把「没连上」当成「答了低分」。
+    """
+    endpoint = os.environ.get("ETO_DSH_ENDPOINT", "").rstrip("/")
+    if not endpoint:
+        # 离线场景（CLI / 测试 / cron）没有宿主端点：回落本机模型，让评审仍然能出结果。
+        # 这一回落**必须留痕**：返回值前缀标记，_score_single 会把 provider 记成
+        # ollama(fallback)，台账里就能看出这一轮没做成多架构融合。
+        logger.warning("dsh 端点缺失，peer=%s 回落本机模型 %s（本轮未融合）", _MCP_CURRENT_PEER, MODEL)
+        return _FALLBACK_MARK + _call_ollama(MODEL, f"{system}\n\n{prompt}" if system else prompt)
+    provider, _, model_id = model.partition("/")
+    if not model_id:
+        return _provider_error("dsh", model, f"model 必须形如 provider/model，收到 {model!r}")
+    body = json.dumps({
+        "provider": provider,
+        "model": model_id,
+        "system": system,
+        "prompt": prompt,
+        "maxTokens": 800,
+        "timeoutMs": 120_000,
+    }).encode("utf-8")
+    req = urllib.request.Request(endpoint + "/llm", data=body, method="POST",
+                                 headers={"Content-Type": "application/json", "x-dsh-eto": "1"})
+    try:
+        with urllib.request.urlopen(req, timeout=130) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        logger.error("dsh 调用失败 peer=%s model=%s: %s: %s", _MCP_CURRENT_PEER, model, type(e).__name__, e)
+        return _provider_error("dsh", model, f"{type(e).__name__}: {e}")
+    if payload.get("_error"):
+        logger.error("dsh 端点报错 peer=%s model=%s: %s", _MCP_CURRENT_PEER, model, payload.get("error"))
+        return _provider_error("dsh", model, str(payload.get("error"))[:200])
+    text = str(payload.get("_text") or "").strip()
+    if text == "":
+        return _provider_error("dsh", model, "宿主返回空文本")
+    return text
+
+
 def _call_provider(provider: str, model: str, system: str, prompt: str) -> str:
     """路由到不同的 LLM provider"""
     full = f"{system}\n\n{prompt}" if system else prompt
@@ -74,6 +126,10 @@ def _call_provider(provider: str, model: str, system: str, prompt: str) -> str:
         return _call_claude(model, system, prompt)
     elif provider == "mcp":
         return _call_mcp_agent(model, system, prompt)  # model 参数存的是 server_cmd JSON
+    elif provider == "dsh":
+        # 虚拟供应商：把调用回落到 DSH 宿主的 llm 服务，那里能路由到任意已配置 provider。
+        # model 形如 "loomy/glm-5.3-flash"（provider/model），这样每个 peer 可以是不同架构。
+        return _call_dsh(model, system, prompt)
     else:
         return _call_ollama(model, full)
 
@@ -232,19 +288,30 @@ def _score_single(peer: str, plan: str) -> dict:
 
     # A provider failure is DATA, not a score. Before this branch existed, a dead Ollama looked
     # exactly like a peer that answered 0.5 — the "fake success" the panel used to report.
+    if isinstance(raw, str) and raw.startswith(_FALLBACK_MARK):
+        raw = raw[len(_FALLBACK_MARK):]
+        fallback = True
+    else:
+        fallback = False
+
     failure = _parse_provider_error(raw)
     if failure is not None:
         logger.error("peer=%s provider=%s/%s 无响应: %s", peer, failure.get("provider"), failure.get("model"), failure.get("reason"))
         return {
             "peer": peer,
             "score": None,
+            "provider": failure.get("provider"),
+            "model": failure.get("model"),
             "concern": f"[{peer}] provider {failure.get('provider')}/{failure.get('model')} 无响应: {failure.get('reason')}"[:300],
             "suggestion": "",
             "provider_error": True,
         }
 
     parsed = _extract_json(raw)
-    result = {"peer": peer, "score": 0.5, "concern": "", "suggestion": ""}
+    peer_cfg = _load_peer_config().get(peer, DEFAULT_PEER_CONFIG.get(peer, DEFAULT_PEER_CONFIG["researcher"]))
+    result = {"peer": peer, "score": 0.5, "concern": "", "suggestion": "",
+              "provider": "ollama(fallback)" if fallback else peer_cfg.get("provider", "ollama"),
+              "model": MODEL if fallback else peer_cfg.get("model", MODEL)}
     if parsed is None:
         # The model answered, but not with the JSON we asked for. That is still a degraded vote —
         # keeping 0.5 here would be indistinguishable from a real middling score.
@@ -283,6 +350,51 @@ def _multi_strategy_tally(scores: list[float]) -> dict:
 
     return {"final": round(final, 3), "strategies": {"approval": round(approval, 3), "borda": round(borda, 3), "irv": round(irv, 3)}}
 
+SYNTHESIS_PROMPT = (
+    "下面是多个不同架构的模型对同一份计划的独立评审意见。请把它们**融合成一段**可执行的结论：\n"
+    "- 只写各方都指向的、或至少两方提到的核心风险（不要罗列所有细节）\n"
+    "- 如果有互相冲突的判断，明确指出冲突点\n"
+    "- 最后给一句「最该先做什么」\n"
+    "不超过 120 字，不要复述原文，不要客套。"
+)
+
+
+def _synthesize(plan: str, votes: list) -> str | None:
+    """把多个 peer 的意见融合成一段结论（MoA 的聚合器角色，走本机模型，免费）。
+
+    聚合失败返回 None —— 台账照常显示每个 peer 的原文，不因聚合失败丢掉整份评审。
+    """
+    usable = [v for v in votes if v.get("score") is not None]
+    if len(usable) < 2:
+        return None
+    lines = []
+    for v in usable:
+        lines.append(f"[{v['peer']} score={v['score']}] concern: {v.get('concern', '')} | suggestion: {v.get('suggestion', '')}")
+    prompt = SYNTHESIS_PROMPT + "\n\n计划:\n" + plan[:1200] + "\n\n各方意见:\n" + "\n".join(lines)
+    try:
+        raw = _call_ollama(MODEL, prompt)
+    except Exception as e:
+        logger.warning("融合聚合失败（保留各 peer 原文）: %s: %s", type(e).__name__, e)
+        return None
+    failure = _parse_provider_error(raw)
+    if failure is not None:
+        logger.warning("融合聚合失败: %s", failure.get("reason"))
+        return None
+    text = (raw or "").strip()
+    if not text:
+        return None
+    # 本地小模型常把结论包成 JSON；取其中的文本字段，避免台账里显示一段转义 JSON。
+    if text.startswith("{"):
+        try:
+            inner = json.loads(text)
+            for key in ("conclusion", "synthesis", "text", "summary", "result"):
+                if isinstance(inner.get(key), str) and inner[key].strip():
+                    return inner[key].strip()[:800]
+        except json.JSONDecodeError:
+            pass
+    return text[:800]
+
+
 def peer_review(plan: str, peers: list[str]) -> dict:
     """三阶段共识：T1评分 → T2审议 → T3终审"""
     # T1: 独立评分
@@ -316,6 +428,13 @@ def peer_review(plan: str, peers: list[str]) -> dict:
         "status": "approved" if avg >= 0.6 else "revise",
         "final_score": avg,
         "votes": votes,
+        # 融合层：各 peer 实际走的 provider/model，以及聚合器给出的统一结论。
+        "fusion": {
+            "sources": [{"peer": v["peer"], "provider": v.get("provider", "?"), "model": v.get("model", "?")} for v in votes],
+            "distinct_providers": len({v.get("provider") for v in votes if v.get("provider")}),
+            "aggregator": f"ollama/{MODEL}",
+        },
+        "synthesis": _synthesize(plan, votes),
         "deliberation": {"rounds": 0, "strategies": tally["strategies"]},
         "actions": [],
         "audit_id": f"v{int(__import__('time').time())}",
