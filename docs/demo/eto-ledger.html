@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ETO 评审台账 · dsh-eto 改造后形态</title>
+<style>
+  :root {
+    --bg: #0b0d0f;
+    --panel: #121518;
+    --panel-2: #171b1f;
+    --line: #23282d;
+    --line-soft: #1b1f23;
+    --text: #e6e9ec;
+    --text-2: #a3abb3;
+    --text-3: #6d767f;
+    --green: #3fb950;
+    --green-soft: rgba(63,185,80,.12);
+    --amber: #d29922;
+    --amber-soft: rgba(210,153,34,.13);
+    --red: #f85149;
+    --red-soft: rgba(248,81,73,.12);
+    --blue: #58a6ff;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.55 var(--sans); -webkit-font-smoothing: antialiased;
+    display: flex; overflow: hidden;
+  }
+  button { font: inherit; color: inherit; cursor: pointer; }
+
+  /* ── rail ─────────────────────────────────────────── */
+  .rail {
+    width: 56px; flex: 0 0 56px; background: #0d1013; border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 4px;
+  }
+  .rail .logo {
+    width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(150deg,#1f6feb,#388bfd);
+    display: grid; place-items: center; font-weight: 700; font-size: 12px; color: #fff; margin-bottom: 10px;
+    letter-spacing: -.5px;
+  }
+  .rail button {
+    width: 40px; height: 40px; border: 0; background: transparent; border-radius: 9px;
+    color: var(--text-3); display: grid; place-items: center; gap: 0; position: relative;
+  }
+  .rail button:hover { background: var(--panel-2); color: var(--text-2); }
+  .rail button[aria-selected="true"] { background: var(--panel-2); color: var(--text); }
+  .rail button[aria-selected="true"]::before {
+    content: ""; position: absolute; left: -10px; top: 10px; bottom: 10px; width: 2px;
+    background: var(--blue); border-radius: 2px;
+  }
+  .rail .ico { font-size: 16px; line-height: 1; }
+  .rail .cap { font-size: 9px; letter-spacing: .5px; color: inherit; }
+
+  /* ── list column ──────────────────────────────────── */
+  .list {
+    width: 336px; flex: 0 0 336px; background: var(--panel); border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .list-head { padding: 14px 14px 10px; border-bottom: 1px solid var(--line-soft); }
+  .list-head h1 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .2px; }
+  .list-head .sub { color: var(--text-3); font-size: 11.5px; margin-top: 3px; }
+  .filters { display: flex; gap: 6px; padding: 10px 14px; flex-wrap: wrap; border-bottom: 1px solid var(--line-soft); }
+  .chip {
+    border: 1px solid var(--line); background: transparent; color: var(--text-2);
+    border-radius: 999px; padding: 3px 9px; font-size: 11.5px;
+  }
+  .chip[aria-pressed="true"] { background: var(--panel-2); color: var(--text); border-color: #363c43; }
+  .chip .n { color: var(--text-3); margin-left: 4px; font-variant-numeric: tabular-nums; }
+
+  .records { list-style: none; margin: 0; padding: 6px; overflow-y: auto; flex: 1; min-height: 0; }
+  .rec {
+    display: grid; grid-template-columns: 8px 1fr auto; gap: 9px; align-items: start;
+    padding: 9px 9px 10px; border-radius: 8px; border: 1px solid transparent; cursor: pointer;
+  }
+  .rec:hover { background: var(--panel-2); }
+  .rec[aria-selected="true"] { background: var(--panel-2); border-color: #2c333a; }
+  .rec .dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; }
+  .rec .title { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rec .meta { font-size: 11px; color: var(--text-3); margin-top: 3px; display: flex; gap: 7px; align-items: center; }
+  .rec .meta .sep { opacity: .5; }
+  .rec .score { font: 600 12px var(--mono); color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .tag {
+    font-size: 10.5px; padding: 1px 6px; border-radius: 4px; border: 1px solid transparent;
+    white-space: nowrap; letter-spacing: .2px;
+  }
+  .tag.ok { color: var(--green); background: var(--green-soft); border-color: rgba(63,185,80,.25); }
+  .tag.revise { color: var(--amber); background: var(--amber-soft); border-color: rgba(210,153,34,.25); }
+  .tag.degraded { color: var(--red); background: var(--red-soft); border-color: rgba(248,81,73,.25); }
+
+  /* ── detail ───────────────────────────────────────── */
+  .detail { flex: 1; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; }
+  .detail-head {
+    padding: 16px 22px 13px; border-bottom: 1px solid var(--line-soft); position: sticky; top: 0;
+    background: linear-gradient(180deg, var(--bg) 78%, rgba(11,13,15,.86)); backdrop-filter: blur(6px); z-index: 2;
+  }
+  .detail-head .row1 { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .detail-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .detail-head .facts { display: flex; gap: 14px; margin-top: 9px; flex-wrap: wrap; color: var(--text-3); font-size: 11.5px; }
+  .detail-head .facts b { color: var(--text-2); font-weight: 500; font-family: var(--mono); }
+  .detail-body { padding: 16px 22px 40px; display: flex; flex-direction: column; gap: 14px; max-width: 1080px; }
+
+  .verdict {
+    border: 1px solid var(--line); border-radius: 10px; padding: 13px 15px; background: var(--panel);
+    display: flex; gap: 14px; align-items: flex-start;
+  }
+  .verdict .big { font: 600 26px/1.1 var(--mono); font-variant-numeric: tabular-nums; }
+  .verdict .lbl { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .8px; }
+  .verdict .explain { color: var(--text-2); font-size: 12.5px; }
+  .verdict .explain strong { color: var(--text); font-weight: 600; }
+
+  .peers { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 10px; }
+  .peer { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 12px 13px; position: relative; }
+  .peer[data-state="failed"] { border-color: rgba(248,81,73,.28); background: linear-gradient(180deg, rgba(248,81,73,.05), transparent 60%); }
+  .peer .top { display: flex; align-items: center; gap: 8px; }
+  .peer .who { font-weight: 600; font-size: 12.5px; letter-spacing: .2px; }
+  .peer .who span { color: var(--text-3); font-weight: 400; margin-left: 5px; font-size: 11px; }
+  .peer .sc { margin-left: auto; font: 600 13px var(--mono); font-variant-numeric: tabular-nums; }
+  .peer .sc.na { color: var(--red); font-size: 11px; }
+  .bar { height: 3px; border-radius: 2px; background: #23282d; margin: 9px 0 10px; overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 2px; }
+  .field { display: grid; grid-template-columns: 58px 1fr; gap: 6px; font-size: 12px; margin-top: 6px; }
+  .field .k { color: var(--text-3); font-size: 11px; padding-top: 1px; }
+  .field .v { color: var(--text-2); }
+  .field .v.err { color: #ff9b93; font-family: var(--mono); font-size: 11px; word-break: break-all; }
+
+  .card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  .card > .hd {
+    display: flex; align-items: center; gap: 8px; padding: 10px 13px; border-bottom: 1px solid var(--line-soft);
+    font-size: 12px; color: var(--text-2);
+  }
+  .card > .hd .right { margin-left: auto; display: flex; gap: 6px; }
+  .card > .bd { padding: 12px 13px; }
+  .btn {
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--text-2);
+    border-radius: 7px; padding: 4px 10px; font-size: 11.5px;
+  }
+  .btn:hover { color: var(--text); border-color: #3a4148; }
+  .btn[aria-pressed="true"] { color: var(--green); border-color: rgba(63,185,80,.4); background: var(--green-soft); }
+  .plan {
+    font: 12px/1.6 var(--mono); color: var(--text-2); white-space: pre-wrap; margin: 0;
+    background: #0e1114; border: 1px solid var(--line-soft); border-radius: 8px; padding: 11px 12px;
+  }
+  .note { color: var(--text-3); font-size: 11.5px; }
+  .actions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+  .actions li { display: flex; gap: 8px; font-size: 12.5px; color: var(--text-2); }
+  .actions li::before { content: "→"; color: var(--text-3); }
+
+  .json { font: 11.5px/1.6 var(--mono); color: var(--text-2); white-space: pre-wrap; word-break: break-all; margin: 0; }
+  details summary { cursor: pointer; color: var(--text-2); font-size: 12px; }
+  details summary::marker { color: var(--text-3); }
+
+  /* ── evidence view ────────────────────────────────── */
+  .ev-wrap { padding: 20px 22px 48px; max-width: 1120px; }
+  .ev-wrap > h2 { margin: 0 0 4px; font-size: 15px; }
+  .ev-wrap > p { margin: 0 0 18px; color: var(--text-3); font-size: 12px; }
+  .ev { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; margin-bottom: 12px; }
+  .ev .hd { display: flex; gap: 10px; align-items: baseline; padding: 11px 14px; border-bottom: 1px solid var(--line-soft); }
+  .ev .hd .t { font-weight: 600; font-size: 12.5px; }
+  .ev .hd .v {
+    margin-left: auto; font: 600 12px var(--mono); color: var(--amber);
+    background: var(--amber-soft); border: 1px solid rgba(210,153,34,.24); padding: 1px 8px; border-radius: 5px;
+  }
+  .ev .bd { padding: 12px 14px; color: var(--text-2); font-size: 12.5px; }
+  .ev .src { padding: 9px 14px; border-top: 1px solid var(--line-soft); color: var(--text-3); font-size: 11px; font-family: var(--mono); }
+  table.mini { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.mini th, table.mini td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  table.mini th { color: var(--text-3); font-weight: 500; font-size: 11px; }
+  table.mini td.mono { font-family: var(--mono); font-size: 11.5px; }
+  .yes { color: var(--amber); }
+  .no { color: var(--text-3); }
+
+  .empty { padding: 28px; color: var(--text-3); text-align: center; font-size: 12px; }
+  .copied { color: var(--green); }
+  @media (max-width: 1080px) {
+    .list { width: 288px; flex-basis: 288px; }
+  }
+  @media (max-width: 860px) {
+    .list { display: none; }
+  }
+</style>
+</head>
+<body>
+<nav class="rail" aria-label="主导航">
+  <div class="logo">ETO</div>
+  <button id="nav-ledger" aria-selected="true" title="评审台账"><span class="ico">▤</span><span class="cap">台账</span></button>
+  <button id="nav-evidence" aria-selected="false" title="改造依据"><span class="ico">⌁</span><span class="cap">依据</span></button>
+  <button id="nav-trigger" aria-selected="false" title="什么时候会评"><span class="ico">◎</span><span class="cap">触发</span></button>
+</nav>
+
+<aside class="list" id="list-col">
+  <div class="list-head">
+    <h1>评审台账</h1>
+    <div class="sub">本机 qwen3-8b-arb · 免费 · 与云端模型不同源</div>
+  </div>
+  <div class="filters" id="filters"></div>
+  <ul class="records" id="records"></ul>
+</aside>
+
+<main class="detail" id="detail"></main>
+
+<script>
+/* ─────────────────────────────────────────────────────────────
+   数据：全部来自 2026-11-06 本机实跑与 ~/.eto/shared_memory。
+   每条记录都带 source 字段，标出它到底来自哪里。
+   ───────────────────────────────────────────────────────────── */
+const RECORDS = [
+  {
+    id: 'r1',
+    at: '11-06 19:18',
+    kind: 'consensus',
+    status: 'approved',
+    score: 0.75,
+    durationMs: 56900,
+    model: 'qwen3-8b-arb:latest',
+    trigger: '方案拍板前',
+    plan: '改造方案 v2 提案（dsh-eto）\n\n目标：把 packages/dsh-eto 从「7 个工具 + 查询面板」改成「日常会用的免费独立评审」。\n一、定位收窄：只留 eto_consensus 与 eto_peer_score…\n二、触发点从「想用时」改成「决策前」…\n三、面板只做台账…\n四、三步实施…',
+    peers: [
+      { name: 'researcher', score: 0.75, state: 'ok',
+        concern: '未明确量化效果评估指标和长期维护策略',
+        suggestion: '建议增加使用率监控、质量反馈循环及模型迭代计划' },
+      { name: 'coder', score: 0.65, state: 'ok',
+        concern: '技术方案在实现路径上较为合理，但存在一定的技术债务风险，特别是在模型质量保障和长期维护方面。',
+        suggestion: '建议考虑使用更高效的本地模型或引入缓存机制，并增加对评审结果的验证流程以提高可靠性。' },
+      { name: 'auditor', score: null, state: 'failed',
+        concern: '回复里先有一个完整的评分 JSON，后面又跟了 </think> 和第二段半截 JSON。_extract_json 取「第一个 { 到最后一个 }」，把两段拼成一个非法 JSON 后解析失败 —— 它的真实疑虑（「未考虑云端和本地模型的切换风险及数据一致性」）就在第一段里，被整段丢掉。',
+        suggestion: '',
+        raw: '（出错信息里保留的前 120 字）{"score":0.65,"concern":"未考虑云端模型和本地模型的切换风险及数据一致性问题","suggestion":"…"}\n</think>\n\n{ "s' }
+    ],
+    actions: ['1/3 个 peer 无有效评分（auditor），结论仅基于其余 2 个'],
+    source: 'packages/dsh-eto/lib/eto_runner.py eto_consensus 实跑（2026-11-06 19:18，56.9s）'
+  },
+  {
+    id: 'r2',
+    at: '11-06 19:23',
+    kind: 'consensus',
+    status: 'revise',
+    score: 0.5,
+    durationMs: 76200,
+    model: 'qwen3-8b-arb:latest',
+    trigger: '改动入库前',
+    plan: '把 20 处 except: pass 一次性改成 except: return None，直接合并到 main，不跑测试',
+    peers: [
+      { name: 'researcher', score: 0.5, state: 'ok',
+        concern: '缺乏对代码结构和潜在错误的考虑',
+        suggestion: '应进行单元测试验证修改后的代码行为，并评估代码可维护性' },
+      { name: 'coder', score: null, state: 'failed',
+        concern: 'provider 无响应：TimeoutError: timed out（_call_ollama 30s 硬超时）',
+        suggestion: '' },
+      { name: 'auditor', score: null, state: 'failed',
+        concern: 'provider 无响应：TimeoutError: timed out（同一 30s 预算，串行排队）',
+        suggestion: '' }
+    ],
+    actions: ['2/3 个 peer 无有效评分（coder, auditor），结论仅基于其余 1 个'],
+    source: 'packages/dsh-eto/lib/eto_runner.py eto_consensus 实跑（2026-11-06 19:23，76.2s）'
+  },
+  {
+    id: 'r3',
+    at: '11-06 18:23',
+    kind: 'consensus',
+    status: 'approved',
+    score: 0.8,
+    durationMs: null,
+    model: 'qwen3-8b-arb:latest',
+    trigger: '—',
+    plan: null,
+    planNote: '输入没有留存：这次评审只把每个 peer 的分数与疑虑写进了共享记忆，计划原文没有落盘。',
+    peers: [
+      { name: 'researcher', score: 0.8, state: 'ok',
+        concern: '未提及用户研究或可用性测试，可能忽略用户体验影响',
+        suggestion: '' },
+      { name: 'coder', score: 0.85, state: 'ok',
+        concern: '缺乏对用户行为变化的深入分析和风险评估，可能影响用户体验和系统稳定性。',
+        suggestion: '' },
+      { name: 'auditor', score: 0.95, state: 'ok',
+        concern: '未提及用户对新功能的接受度和培训计划',
+        suggestion: '' }
+    ],
+    actions: [],
+    source: '~/.eto/shared_memory/peer_score:{researcher,coder,auditor}.json + consensus:last.json（ts 1793960599–1793960610）'
+  },
+  {
+    id: 'r4',
+    at: '11-05 14:31',
+    kind: 'flow',
+    status: 'partial',
+    score: null,
+    durationMs: null,
+    model: '—',
+    trigger: '面板「完整流程」',
+    plan: '把 MCP 桥改成插件',
+    peers: [],
+    route: { gewu: 'knowledge', route: 'direct', confidence: 0.7, layer: 'keyword' },
+    actions: [],
+    planNote: '这是面板「完整流程」写下的唯一一条记录。路由判成 knowledge/direct —— 而这条任务实际上是改代码。',
+    source: '~/.eto/shared_memory/flow:last.json（client.js:560 是唯一写入方）'
+  }
+]
+
+const EVIDENCE = [
+  {
+    title: '面板的主按钮，开箱就是 409',
+    verdict: '可用性 0',
+    body: `在真实 DSH 实例（profile <code>eto-selftest</code>，与桌面版共用同一个 <code>dsh-eto</code> 插件）里点「评审」，462ms 返回：<br>
+           <code>panel scoring needs peerScoreProvider and peerScoreModel in the ETO settings page</code><br>
+           409 是诚实的（不是静默降级），但结果一样——<b>面板头号动作在没手动配置之前不可用</b>。三个 profile 都没有配这两个字段。`,
+    src: 'GET/POST 实测 + grep peerScoreProvider ~/.dsh/profiles/*/cordis.patch.yml（无命中）'
+  },
+  {
+    title: '7 个工具常驻，其中 5 个模型自己就能做',
+    verdict: '4127 → 1860 字符',
+    body: `把 <code>enabledTools</code> 的 7 个工具 schema 序列化量长度：<b>4127 字符</b>；收窄到 <code>eto_consensus</code> + <code>eto_peer_score</code>：<b>1860 字符</b>（−55%）。
+           这些是每一轮请求都要付的固定成本，而其中多数能力模型本来就有。`,
+    src: 'node 里直接 import lib/tools.js 的 createTools() 并 JSON.stringify（含 name/description/parameters/output.schema）'
+  },
+  {
+    title: 'eto_route 在真实任务上基本走兜底分支',
+    verdict: '7 / 10 → knowledge·direct·0.7',
+    body: `拿 10 条日常 DSH 任务跑 <code>eto_route</code>，7 条落到同一个兜底结果 <code>knowledge / direct / 0.7</code>——
+           包括「把面板改成异步评审」「修 /api/run 的超时」这类明确的代码任务。它和「今天天气怎么样」给同一个答案。`,
+    src: 'eto_runner.py eto_route × 10（2026-11-06，见下表）'
+  },
+  {
+    title: '共识评审 3 次实跑：每次都有 1–2 个 peer 掉队',
+    verdict: '2/3 次降级',
+    body: `三次里只有一次（18:23）是 3/3 全绿。掉队原因不是模型不会答，而是：<b>reasoning 混进 JSON</b>（解析器只取第一段）、
+           <b>单 peer 30s 硬超时</b>（8B 模型 + 串行）。同一 prompt 连跑 7 次解析全部成功 —— 说明这是<b>间歇</b>故障，不是必然失败。`,
+    src: 'eto_consensus 实跑 3 次 + 同 prompt 连打 7 次（PARSE_FAIL 0/7）'
+  },
+  {
+    title: '共享记忆里 31 条 workflow_step：24 条失败，7 条「成功」其实内含 provider error',
+    verdict: '7 / 31 假的 ok',
+    body: `11-02 到 11-05 的 31 条 <code>wf_*_1_coder</code> 记录中，24 条 <code>status=failed</code>，7 条 <code>status=ok</code>
+           但 output 里是 <code>__ETO_PROVIDER_ERROR__…Connection refused</code>（PR #46 之前的口径）。
+           <b>没有任何东西读这些失败</b>：<code>get_outcomes</code> 只认 <code>task_outcome</code> 类型，而那份只有 1 条。`,
+    src: '~/.eto/shared_memory/wf_*.json（31 个文件，逐个解析 value.status 与 output）'
+  },
+  {
+    title: '面板自己的写入，全生命周期只有 1 条',
+    verdict: '1 条',
+    body: `把面板输入框里的东西变成结果的唯一持久化路径是「完整流程」写 <code>flow:last</code>，而它只出现过一次（11-05 14:31）。
+           评审结果本身只进 localStorage，<b>会话一滚就没了</b>，也不进对话 —— 这就是「它做判断但没人采纳」的物理原因。`,
+    src: '~/.eto/shared_memory/flow:last.json + grep flow:last 全仓（仅 client.js:560 写入，无读取方）'
+  },
+  {
+    title: 'eto_clarify 是关键词表',
+    verdict: '2 / 3 命中',
+    body: `「把这个弄一下」→ 命中「弄一下」；「帮我优化一下」→ 命中「优化」；
+           一条写清文件、行号、验收标准的指令 → <code>vague: false</code>，正确。作为派活前自查不算错，但模型自己就能判断，且更细。`,
+    src: 'eto_runner.py eto_clarify × 3（2026-11-06）'
+  },
+  {
+    title: '「按历史成功率选 agent」没有历史',
+    verdict: '0.5 恒等',
+    body: `31 条 workflow_step 失败记录就躺在共享记忆里，但 <code>get_outcomes</code> 只认 <code>type == "task_outcome"</code>，
+           而那个类型全库只有 1 条。于是 <code>_success_rate('coder')</code> 恒返回 0.5 ——
+           <code>select_agent</code> 的“历史成功率”权重对结果毫无影响。这是评估报告里排第一的那处静默降级的真身。`,
+    src: "PYTHONPATH=~/src/eto python -c \"from eto.stitches.bidding.workflow import _success_rate; print(_success_rate('coder'))\" → 0.5"
+  }
+]
+
+const ROUTE_TABLE = [
+  ['把 dsh-eto 的面板改成异步评审', 'knowledge / direct / 0.7', true],
+  ['修一下 packages/dsh-eto/lib/index.js 里 /api/run 的超时', 'knowledge / direct / 0.7', true],
+  ['这个 PR 的 diff 有没有引入静默降级', 'knowledge / direct / 0.7', true],
+  ['帮我看看 issue #50 说了什么', 'knowledge / direct / 0.7', true],
+  ['把 README 里过期的那段删掉', 'knowledge / direct / 0.7', true],
+  ['调研一下 Ollama 上 qwen3-8b 的实际吞吐', 'research / plan / 0.85', false],
+  ['给共识评审加一个 degraded 状态', 'knowledge / direct / 0.7', true],
+  ['解释一下 ETO 的三镜路由是什么', 'knowledge / direct / 0.9', false],
+  ['triage 一下今天的 GitHub issue', 'knowledge / direct / 0.7', true],
+  ['把评估报告整理成一份 HTML', 'research / plan / 0.85', false]
+]
+
+/* ── state ─────────────────────────────────────────── */
+const state = {
+  view: 'ledger',
+  filter: 'all',
+  selected: 'r1',
+  useful: JSON.parse(localStorage.getItem('eto-ledger:useful') || '{}')
+}
+
+const STATUS = {
+  approved: { tag: 'ok', label: '通过', color: 'var(--green)' },
+  revise: { tag: 'revise', label: '需修改', color: 'var(--amber)' },
+  degraded: { tag: 'degraded', label: '降级', color: 'var(--red)' },
+  partial: { tag: 'revise', label: '只留路由', color: 'var(--amber)' }
+}
+
+const fmtDuration = ms => ms === null ? '—' : (ms / 1000).toFixed(1) + 's'
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const satisfies = rec => state.filter === 'all' ? true
+  : state.filter === 'degraded' ? (rec.peers.some(p => p.state === 'failed') || rec.status === 'degraded')
+  : rec.status === state.filter
+
+/* ── list rendering ────────────────────────────────── */
+function renderFilters () {
+  const counts = {
+    all: RECORDS.length,
+    approved: RECORDS.filter(r => r.status === 'approved').length,
+    revise: RECORDS.filter(r => r.status === 'revise' || r.status === 'partial').length,
+    degraded: RECORDS.filter(r => r.peers.some(p => p.state === 'failed') || r.status === 'degraded').length
+  }
+  const labels = { all: '全部', approved: '通过', revise: '需修改', degraded: '有 peer 掉队' }
+  document.getElementById('filters').innerHTML = Object.keys(labels).map(key =>
+    `<button class="chip" data-filter="${key}" aria-pressed="${state.filter === key}">${labels[key]}<span class="n">${counts[key]}</span></button>`
+  ).join('')
+}
+
+function renderRecords () {
+  const rows = RECORDS.filter(satisfies)
+  const ul = document.getElementById('records')
+  if (rows.length === 0) { ul.innerHTML = '<li class="empty">这个筛选下没有记录</li>'; return }
+  ul.innerHTML = rows.map(rec => {
+    const st = STATUS[rec.status]
+    const failed = rec.peers.filter(p => p.state === 'failed').length
+    return `<li class="rec" data-id="${rec.id}" aria-selected="${rec.id === state.selected}" tabindex="0">
+      <span class="dot" style="background:${st.color}"></span>
+      <span>
+        <span class="title">${esc(rec.plan ? rec.plan.split('\n')[0] : rec.planNote)}</span>
+        <span class="meta">
+          <span class="tag ${st.tag}">${st.label}</span>
+          <span class="sep">·</span><span>${rec.at}</span>
+          ${failed ? `<span class="sep">·</span><span style="color:var(--red)">${failed} peer 掉队</span>` : ''}
+          ${rec.useful ? '' : ''}
+        </span>
+      </span>
+      <span class="score">${rec.score === null ? '—' : rec.score.toFixed(2)}</span>
+    </li>`
+  }).join('')
+}
+
+/* ── detail rendering ──────────────────────────────── */
+function peerCard (peer) {
+  const failed = peer.state === 'failed'
+  const pct = peer.score === null ? 0 : Math.round(peer.score * 100)
+  const color = peer.score === null ? 'var(--red)' : peer.score >= 0.7 ? 'var(--green)' : peer.score >= 0.5 ? 'var(--amber)' : 'var(--red)'
+  return `<article class="peer" data-state="${peer.state}">
+    <div class="top">
+      <span class="who">${peer.name}<span>${peer.name === 'researcher' ? '完整性 · 证据' : peer.name === 'coder' ? '可行性 · 技术债' : '风险面 · 最坏情况'}</span></span>
+      <span class="sc ${peer.score === null ? 'na' : ''}" style="color:${color}">${peer.score === null ? '无有效分' : peer.score.toFixed(2)}</span>
+    </div>
+    <div class="bar"><i style="width:${pct}%;background:${color}"></i></div>
+    <div class="field"><span class="k">疑虑</span><span class="v ${failed ? 'err' : ''}">${esc(peer.concern)}</span></div>
+    ${peer.suggestion ? `<div class="field"><span class="k">建议</span><span class="v">${esc(peer.suggestion)}</span></div>` : ''}
+    ${peer.raw ? `<div class="field"><span class="k">原文</span><span class="v err">${esc(peer.raw)}</span></div>` : ''}
+  </article>`
+}
+
+function renderDetail () {
+  const rec = RECORDS.find(r => r.id === state.selected)
+  const detail = document.getElementById('detail')
+  if (!rec) { detail.innerHTML = '<div class="empty">左侧选一条记录</div>'; return }
+
+  const st = STATUS[rec.status]
+  const okPeers = rec.peers.filter(p => p.state === 'ok').length
+  const failedPeers = rec.peers.filter(p => p.state === 'failed').length
+  const isUseful = Boolean(state.useful[rec.id])
+
+  const verdictText = rec.kind === 'flow'
+    ? '这一条只有路由，没有评审'
+    : failedPeers === 0
+      ? `三个 peer 都给了分，<strong>结论基于 ${okPeers}/3</strong>。`
+      : `结论只基于 <strong>${okPeers}/${rec.peers.length}</strong> 个 peer —— 另外 ${failedPeers} 个没给出有效评分，原因写在下面的卡片里。`
+
+  detail.innerHTML = `
+    <div class="detail-head">
+      <div class="row1">
+        <span class="tag ${st.tag}">${st.label}</span>
+        <h2>${esc(rec.plan ? rec.plan.split('\n')[0] : rec.planNote)}</h2>
+      </div>
+      <div class="facts">
+        <span>触发 <b>${esc(rec.trigger)}</b></span>
+        <span>耗时 <b>${rec.kind === 'consensus' ? fmtDuration(rec.durationMs) : '—'}</b></span>
+        <span>模型 <b>${esc(rec.model)}</b></span>
+        <span>时间 <b>${rec.at}</b></span>
+        <span>来源 <b>${esc(rec.source.length > 46 ? rec.source.slice(0, 46) + '…' : rec.source)}</b></span>
+      </div>
+    </div>
+    <div class="detail-body">
+      <section class="verdict">
+        <div>
+          <div class="lbl">总分</div>
+          <div class="big" style="color:${st.color}">${rec.score === null ? '—' : rec.score.toFixed(2)}</div>
+        </div>
+        <div style="flex:1">
+          <div class="lbl">判读</div>
+          <div class="explain">${verdictText}</div>
+          ${rec.actions.length ? `<ul class="actions" style="margin-top:8px">${rec.actions.map(a => `<li>${esc(a)}</li>`).join('')}</ul>` : ''}
+        </div>
+      </section>
+
+      ${rec.peers.length ? `<section class="peers">${rec.peers.map(peerCard).join('')}</section>` : ''}
+
+      ${rec.route ? `<section class="card">
+        <div class="hd">路由结果<span class="right"><span class="tag revise">判成 ${rec.route.gewu}</span></span></div>
+        <div class="bd">
+          <table class="mini">
+            <tr><th>gewu</th><td class="mono">${rec.route.gewu}</td></tr>
+            <tr><th>route</th><td class="mono">${rec.route.route}</td></tr>
+            <tr><th>confidence</th><td class="mono">${rec.route.confidence}</td></tr>
+            <tr><th>layer</th><td class="mono">${rec.route.layer}</td></tr>
+          </table>
+          <p class="note" style="margin:10px 0 0">${esc(rec.planNote || '')}</p>
+        </div>
+      </section>` : ''}
+
+      <section class="card">
+        <div class="hd">被评的东西
+          <span class="right">
+            <button class="btn" id="toggle-useful" aria-pressed="${isUseful}">${isUseful ? '✓ 有用' : '标记有用'}</button>
+            <button class="btn" id="copy-json">复制 JSON</button>
+          </span>
+        </div>
+        <div class="bd">
+          ${rec.plan ? `<pre class="plan">${esc(rec.plan)}</pre>` : `<p class="note" style="margin:0">${esc(rec.planNote || '未留存输入')}</p>`}
+        </div>
+      </section>
+
+      ${rec.peers.length ? `<section class="card">
+        <div class="hd">评审是怎么触发的</div>
+        <div class="bd">
+          <p class="note" style="margin:0 0 8px">评审不在面板里发起。它由对话里的工具调用产生，触发条件写在工具描述里，模型据此判断：</p>
+          <ul class="actions">
+            <li>删除 / 部署 / 迁移这类不可逆操作之前</li>
+            <li>合并 PR 或宣布「做完了」之前，要一份不同源的复核</li>
+            <li>云端模型限流或不可用时，用本机 8B 拿一个结构化判断</li>
+          </ul>
+          <p class="note" style="margin:10px 0 0">记录落在这里（<code>~/.eto/reviews/&lt;时间&gt;.json</code>），所以会话滚掉之后还能查回来 —— 面板唯一不可被对话替代的事是这件事。</p>
+        </div>
+      </section>` : ''}
+
+      <section class="card">
+        <div class="hd">原始结果</div>
+        <div class="bd"><details><summary>展开 JSON</summary><pre class="json">${esc(JSON.stringify({
+          status: rec.status, final_score: rec.score,
+          votes: rec.peers.map(p => ({ peer: p.name, score: p.score, concern: p.concern, suggestion: p.suggestion })),
+          actions: rec.actions, model: rec.model
+        }, null, 2))}</pre></details></div>
+      </section>
+    </div>`
+
+  document.getElementById('toggle-useful').onclick = () => {
+    state.useful[rec.id] = !state.useful[rec.id]
+    localStorage.setItem('eto-ledger:useful', JSON.stringify(state.useful))
+    renderDetail(); renderRecords()
+  }
+  document.getElementById('copy-json').onclick = async ev => {
+    const text = JSON.stringify(rec, null, 2)
+    try {
+      await navigator.clipboard.writeText(text)
+      ev.target.textContent = '已复制 ✓'
+      ev.target.classList.add('copied')
+      setTimeout(() => { ev.target.textContent = '复制 JSON'; ev.target.classList.remove('copied') }, 1400)
+    } catch { ev.target.textContent = '复制被拒' }
+  }
+}
+
+/* ── evidence view ─────────────────────────────────── */
+function renderEvidence () {
+  const detail = document.getElementById('detail')
+  detail.innerHTML = `<div class="ev-wrap">
+    <h2>为什么是这套改法</h2>
+    <p>每条都是 2026-11-06 在本机跑出来的，命令与文件写在每张卡片底部。</p>
+    ${EVIDENCE.map(ev => `<section class="ev">
+      <div class="hd"><span class="t">${esc(ev.title)}</span><span class="v">${esc(ev.verdict)}</span></div>
+      <div class="bd">${ev.body}</div>
+      <div class="src">${esc(ev.src)}</div>
+    </section>`).join('')}
+
+    <section class="ev">
+      <div class="hd"><span class="t">eto_route 十条真实任务</span><span class="v">7 条兜底</span></div>
+      <div class="bd">
+        <table class="mini">
+          <tr><th style="width:56%">任务</th><th>输出</th><th style="width:64px">兜底</th></tr>
+          ${ROUTE_TABLE.map(([t, o, isFallback]) => `<tr>
+            <td>${esc(t)}</td><td class="mono">${esc(o)}</td>
+            <td class="${isFallback ? 'yes' : 'no'}">${isFallback ? '是' : '否'}</td></tr>`).join('')}
+        </table>
+      </div>
+      <div class="src">for t in tasks: echo '{"task":"…"}' | eto_runner.py eto_route</div>
+    </section>
+  </div>`
+}
+
+/* ── trigger view ──────────────────────────────────── */
+function renderTrigger () {
+  document.getElementById('detail').innerHTML = `<div class="ev-wrap">
+    <h2>什么时候会评</h2>
+    <p>评审不是「想起来才打开面板」，而是三个具体时刻。前两个自动、第三个自动兜底。</p>
+
+    <section class="ev">
+      <div class="hd"><span class="t">① 不可逆操作之前</span><span class="v">自动</span></div>
+      <div class="bd">删表、部署、批量改名、改认证 —— 这类动作错了要回滚。共识评审给的是三个不同角度的疑虑（最坏情况 / 技术债 / 证据不足），
+      和模型自己「再想一遍」不是同一件事：<b>它换了一套 system prompt 和一个不同的模型</b>。</div>
+      <div class="src">触发词写进 eto_consensus 的 description，随工具 schema 进入系统提示</div>
+    </section>
+
+    <section class="ev">
+      <div class="hd"><span class="t">② 合并 / 交付前要第二意见</span><span class="v">半自动</span></div>
+      <div class="bd">自审用的是写代码的同一个模型，相关性太高。本机 8B 是不同权重、不同训练数据，
+      它的疑虑有独立价值 —— 本页 r1 那条就指出了「没有量化指标」「云端/本地切换的一致性」两个我自己漏掉的点。</div>
+      <div class="src">见 r1：researcher 0.75 / coder 0.65 / auditor 掉队</div>
+    </section>
+
+    <section class="ev">
+      <div class="hd"><span class="t">③ 主模型不可用时</span><span class="v">兜底</span></div>
+      <div class="bd">云端 provider 限流、403、额度耗尽时，本机 8B 仍然能答。此时 <code>eto_peer_score</code>（跟随会话模型）会失败，
+      <code>eto_consensus</code>（固定走本机）还能给结论 —— 这是唯一一个「没有它就得停下」的场景。</div>
+      <div class="src">docs/eto-assessment-2026-11.md §P2：云端 provider 均撞过限流/403</div>
+    </section>
+
+    <section class="ev">
+      <div class="hd"><span class="t">不该触发的时候</span><span class="v">明确的「不要做」</span></div>
+      <div class="bd">判断任务类型、检查指令是否模糊、给 JSON 写摘要、文件加锁、把任务派给另一个 agent 执行 ——
+      这五件事 DSH 自己做得更好或更省，保留它们只会让工具面变贵、让「ETO 到底该什么时候用」变模糊。</div>
+      <div class="src">依据见「依据」页：route 7/10 兜底、clarify 是关键词表</div>
+    </section>
+  </div>`
+}
+
+/* ── wiring ────────────────────────────────────────── */
+function render () {
+  document.getElementById('nav-ledger').setAttribute('aria-selected', String(state.view === 'ledger'))
+  document.getElementById('nav-evidence').setAttribute('aria-selected', String(state.view === 'evidence'))
+  document.getElementById('nav-trigger').setAttribute('aria-selected', String(state.view === 'trigger'))
+  document.getElementById('list-col').style.display = state.view === 'ledger' ? '' : 'none'
+  if (state.view === 'ledger') { renderFilters(); renderRecords(); renderDetail() }
+  if (state.view === 'evidence') renderEvidence()
+  if (state.view === 'trigger') renderTrigger()
+}
+
+document.getElementById('nav-ledger').onclick = () => { state.view = 'ledger'; render() }
+document.getElementById('nav-evidence').onclick = () => { state.view = 'evidence'; render() }
+document.getElementById('nav-trigger').onclick = () => { state.view = 'trigger'; render() }
+
+document.addEventListener('click', ev => {
+  const chip = ev.target.closest('[data-filter]')
+  if (chip) { state.filter = chip.dataset.filter; renderFilters(); renderRecords(); return }
+  const rec = ev.target.closest('.rec')
+  if (rec) { state.selected = rec.dataset.id; renderRecords(); renderDetail() }
+})
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Enter' && ev.key !== ' ') return
+  const rec = ev.target.closest && ev.target.closest('.rec')
+  if (rec) { ev.preventDefault(); state.selected = rec.dataset.id; renderRecords(); renderDetail() }
+})
+
+render()
+</script>
+</body>
+</html>
