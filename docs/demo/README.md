@@ -8,7 +8,7 @@
 
 | 视图 | 看什么 |
 |:--|:--|
-| 台账 | 每条评审一行：结论状态、用了几个 peer、谁掉队、耗时。右栏是详情 —— 分数、每个 peer 的疑虑与建议、**掉队原因**、原始 JSON |
+| 台账 | 每条评审一行：结论状态、**用了几个架构（Qwen·GLM…）**、谁掉队、耗时。右栏是详情 —— 分数、**融合结论（synthesis）**、每个 peer 的疑虑与建议、**掉队原因**、原始 JSON |
 | 依据 | 8 条实测证据。每张卡底部写了复跑命令或数据文件路径 |
 | 触发 | 什么时候该跑共识评审、什么时候明确不该跑 |
 
@@ -33,6 +33,8 @@
 | `shots/after-ledger-r2.png` | 本 demo 的 r2：两个 peer 超时，错误原文与代码层原因分两栏 |
 | `shots/after-evidence.png` | 本 demo 的「依据」页 |
 | `shots/after-trigger.png` | 本 demo 的「触发」页 |
+| `shots/ledger-before-fusion.png` | 台账列表 + 详情（补 fusion/synthesis 前：列表行只有「几个 peer 掉队」，无架构、无融合结论） |
+| `shots/ledger-after-fusion.png` | 台账列表 + 详情（补 fusion/synthesis 后：列表行显示 `2 架构（Qwen·GLM）`，详情顶部有「融合结论」） |
 
 截图口径：同一台机器、同一浏览器（Chromium headless）、1440×900、深色主题。
 
