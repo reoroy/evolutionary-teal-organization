@@ -288,15 +288,11 @@ export class EtoAdapter extends LlmAdapter {
       return
     }
     const route = parseDelegateRoute(this.settings()?.delegateModel)
-    yield* llm.stream({
-      provider: route.provider,
-      model: route.model,
-      messages: options.messages,
-      // Forward the caller's budget: the delegated model must answer under the same limits
-      // the harness asked for, not under ETO's fused-summary default.
-      ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
-      ...(options.system === undefined ? {} : { system: options.system }),
-      signal: options.signal,
-    })
+    // Forward EVERYTHING the harness asked for, overriding only the route. Dropping fields here
+    // is how the delegate ends up without tools: the model then has no tool schema to fill, so it
+    // emits its native tool-call markup as plain text and nothing ever executes. `tools` is not
+    // optional to pass along — it is the whole reason this path can act at all.
+    const { provider: _provider, model: _model, ...rest } = options
+    yield* llm.stream({ ...rest, provider: route.provider, model: route.model })
   }
 }
