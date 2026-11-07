@@ -136,6 +136,12 @@ def need(args: dict, key: str, kind: type = str):
 
 
 def eto_consensus(args: dict) -> dict:
+    """One consultation.
+
+    `advise` is the default: a consultation returns advice/risks/disagreements, not a score.
+    The scorecard (`review`) stays reachable by asking for it explicitly, so the panel can still
+    render historical records and anyone who wants the old shape can still get it.
+    """
     from eto.stitches.consensus.vote import peer_advise, peer_review
 
     peers = args.get("peers")
@@ -143,12 +149,14 @@ def eto_consensus(args: dict) -> dict:
         not isinstance(peers, list) or not all(isinstance(p, str) and p for p in peers)
     ):
         raise RunnerError("usage", "参数 peers 必须是字符串数组")
-    mode = args.get("mode") or "review"
+    mode = args.get("mode", "advise")
+    if mode not in ("advise", "review"):
+        raise RunnerError("usage", "参数 mode 只能是 advise 或 review")
+    plan = need(args, "plan")
+    names = peers or ["researcher", "coder", "auditor"]
     if mode == "advise":
-        return peer_advise(need(args, "plan"), peers or ["researcher", "coder", "auditor"])
-    return peer_review(
-        need(args, "plan"), peers or ["researcher", "coder", "auditor"]
-    )
+        return peer_advise(plan, names)
+    return peer_review(plan, names)
 
 
 def eto_route(args: dict) -> dict:
