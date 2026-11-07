@@ -253,7 +253,7 @@ test('a delegated turn forwards the tools the harness offered', async () => {
   const seen = []
   const llm = {
     stream: async function * (options) { seen.push(options); yield { type: 'finish', reason: { kind: 'stop' } } },
-    resolveModel: async () => ({ context: { contextWindow: 131_072 } }),
+    resolveModel: async () => ({ context: { contextWindow: 131_072 }, defaultMaxTokens: 65_536 }),
   }
   const adapter = new EtoAdapter({
     settings: () => ({ delegateModel: 'deepseek-official/deepseek-flash' }),
@@ -269,7 +269,9 @@ test('a delegated turn forwards the tools the harness offered', async () => {
   assert.equal(seen.length, 1)
   assert.deepEqual(seen[0].tools, tools, 'tools must reach the delegated model, or it cannot act')
   assert.equal(seen[0].toolChoice, 'auto')
-  assert.equal(seen[0].maxTokens, 1234)
+  // ETO's own output budget (2048, the fused-summary size) must NOT travel to the delegate:
+  // a real answer clamped to it ends the turn with `max-tokens`. The delegate's own budget wins.
+  assert.equal(seen[0].maxTokens, 65_536, 'the delegate model budget must replace ETO\'s summary budget')
   assert.equal(seen[0].system, 'sys')
   assert.equal(seen[0].provider, 'deepseek-official')
   assert.equal(seen[0].model, 'deepseek-flash')
