@@ -138,3 +138,34 @@ test('GET /reviews lists persisted records and /reviews/<id> reads one', async (
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('a legacy scorecard record stays readable beside a consultation record', () => {
+  // Both shapes live in the same ledger: the retired scorecard (status + final_score + votes) and the
+  // consultation (synthesis + advice/risks/disagreements). The panel must read the old files after the
+  // default mode moved to `advise` — otherwise every historical entry becomes unopenable.
+  const home = mkdtempSync(join(tmpdir(), 'eto-reviews-mixed-'))
+  const legacy = {
+    audit_id: 'legacy-1', at: '2026-11-01T00:00:00.000Z', plan: '旧格式',
+    status: 'approved', final_score: 0.78,
+    votes: [{ peer: 'coder', score: 0.7, concern: '边界情况', provider: 'ollama', model: 'qwen3-8b-arb' }],
+  }
+  const advised = {
+    audit_id: 'advise-1', at: '2026-11-07T00:00:00.000Z', plan: '新格式',
+    synthesis: '先补回滚方案再合并',
+    advice: ['补回滚', '明确验收'], risks: ['不可回滚'], disagreements: ['coder 认为要拆小'],
+  }
+  persistReview(legacy, home)
+  persistReview(advised, home)
+
+  const list = listReviews(home)
+  assert.equal(list.length, 2, 'both records must be listed')
+
+  const old = readReview('legacy-1', home)
+  assert.equal(old.status, 'approved')
+  assert.equal(old.final_score, 0.78)
+
+  const fresh = readReview('advise-1', home)
+  assert.equal(fresh.synthesis, '先补回滚方案再合并')
+  assert.deepEqual(fresh.advice, ['补回滚', '明确验收'])
+  assert.equal(fresh.final_score, undefined, 'a consultation carries no score')
+})
