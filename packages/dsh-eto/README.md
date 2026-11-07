@@ -147,9 +147,10 @@ stdout: __ETO_RESULT__{"ok":true,"result":...}
 cd ~/src/dsh-eto && node --test "tests/*.test.mjs"
 ```
 
-76 个用例，分六组：工具目录/输出 schema（`catalog`）、子进程边界（`spawn`，含真超时与取消）、
+85 个用例，分七组：工具目录/输出 schema（`catalog`）、子进程边界（`spawn`，含真超时与取消）、
 配置解析（`config`）、插件装配与 HTTP 路由（`apply`）、真实 ETO 集成（`integration`，缺 checkout 时跳过）、
-`eto_peer_score`（`peer-score`，stub llm）。
+`eto_peer_score`（`peer-score`，stub llm）、`eto_consensus` 的 mode 分派（`consensus-mode`，桩 ETO 记录调用的是
+`peer_advise` 还是 `peer_review`，并断言非法 mode 在派发前就被拒）。
 
 ## 已知限制
 
