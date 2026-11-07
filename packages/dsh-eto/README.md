@@ -5,7 +5,7 @@
 一个插件给 DSH 四样东西：
 
 - **14 个工具**直接注册在 `ctx.tools` 上（无 `mcp__` 前缀、不经过 MCP 握手）
-- **虚拟 provider `eto`**：在模型选择器里选 `eto / eto-consensus`，每轮对话自动跑三源异构融合（本机 Qwen × deepseek-official × qodercn/GLM）
+- **虚拟 provider `eto`**：主动评审入口——选 `eto / eto-consensus` 后先路由（`direct` 委托真模型、`plan`/`consensus` 才走三源融合），不建议当主模型
 - **侧边栏入口 + 信息面板**：ETO 版本/commit、14 个工具可用状态、最近共识、路由统计
 - **设置面板**：仓库/虚拟环境/解释器、工具白名单、`eto_peer_score` 的评分模型、测试连接
 
@@ -72,21 +72,25 @@ DSH_HOME="$HOME/.dsh" dsh plugin --profile desktop add link:$HOME/src/dsh-eto
 | `toolTimeoutMs` | `180000` | 单次工具调用超时 |
 | `peerScoreProvider` / `peerScoreModel` | 空 | `eto_peer_score` 的模型；**两者都填才覆盖**，否则用会话模型 |
 | `peerScoreTimeoutMs` | `90000` | 评分调用超时 |
+| `delegateModel` | `deepseek-official/deepseek-flash` | direct 路由时委托的真模型（`provider/model`） |
+| `includeFullResult` | `false` | 默认是否把完整共识 JSON 附进融合回复 |
 | `envPassthrough` | `[]` | 额外透传给子进程的环境变量名 |
 
 路径支持 `~`。面板只显示 `~` 相对路径，不把本机绝对路径带到页面上。
 
-## 虚拟 provider：把 ETO 当成一个模型来选
+## 虚拟 provider：把 ETO 当成一个「主动评审」入口来选
 
-选它就像选模型——每轮对话自动跑三源异构融合，不用让模型主动调 `eto_consensus`。
+ETO 是**会诊层，不是执行层**——执行能力属于 harness。所以这个 provider 不适合当会话主模型，只适合「主动评审一段方案」：
 
 - **provider**：`eto`；**model**：`eto-consensus`
-- **每轮**：本机 Qwen（ollama）× `deepseek-official/deepseek-flash` × `qodercn/gfmodel` → 聚合器融合成一段结论
+- **先路由再决定**：每轮先跑 `eto_route`。`direct`（普通问答）直接委托真模型回答；只有 `plan` / `consensus` 才走三源融合
+- **融合**：本机 Qwen（ollama）× `deepseek-official/deepseek-flash` × `qodercn/gfmodel` → 聚合器融合成一段结论（先给答案，评分放最后）
 - **流式返回**：符合 DSH 的 llm 契约（`block-start` → `text-delta` → `block-end` → `usage` → `finish`）
+- **预算说实话**：`contextWindow` 按最小 peer（≈32k）声明，默认不附完整 JSON
 - **失败如实报错**：某 peer 掉队会标 `ollama(fallback)` 或 `degraded`，绝不静默回落成单模型
 - 融合本身仍在 `eto/stitches/consensus/vote.py`，provider 只是适配层，复用同一条 `runTool({ tool: 'eto_consensus' })` 通道
 
-`ETO 融合（三源评审）` 预设（本插件 bundle patch 里的 `preset-eto-fusion` 声明行）把这个 provider 设为会话默认模型：在**模式选择**里选 `ETO 融合`，进场就自动触发，每轮都跑融合。预设用 `@deepseek-ai/dsh-agent-default-model` 把 `provider: eto, model: eto-consensus` 钉进预设 scope。
+`ETO 决策会诊` 预设（本插件 bundle patch 里的 `preset-eto-fusion` 声明行）才是推荐形态：**主模型保持真模型**（`deepseek-official/deepseek-flash`，能读文件、改代码、调工具），persona 在写代码/改配置/发 PR 等决策前自动插一次 `eto_consensus(mode="advise")` 会诊（只给建议/分歧/风险，不给评分）。
 
 探针 `GET /@dsh-eto/api/status` 的 `providers` 字段会列出已注册的虚拟 provider（注册成功时为 `["eto"]`）。
 

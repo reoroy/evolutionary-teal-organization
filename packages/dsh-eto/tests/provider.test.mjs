@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { resolveSettings } from '../lib/config.js'
 import { apply } from '../lib/index.js'
-import { ETO_MODEL, ETO_PROVIDER, EtoAdapter, renderConsensus } from '../lib/provider.js'
+import { ETO_MODEL, ETO_PROVIDER, EtoAdapter, parseDelegateRoute, renderConsensus } from '../lib/provider.js'
 import { listReviews } from '../lib/reviews.js'
 import { childEnv } from '../lib/spawn.js'
 
@@ -145,4 +145,85 @@ test('the stream runs one consensus, persists a review, and ends with a stop fin
   } finally {
     process.env.HOME = previous
   }
+})
+
+test('parseDelegateRoute splits provider/model and falls back to the default', () => {
+  assert.deepEqual(parseDelegateRoute(''), { provider: 'deepseek-official', model: 'deepseek-flash' })
+  assert.deepEqual(parseDelegateRoute('deepseek-official/deepseek-flash'), { provider: 'deepseek-official', model: 'deepseek-flash' })
+  assert.deepEqual(parseDelegateRoute('  dsh/qodercn/gfmodel '), { provider: 'dsh', model: 'qodercn/gfmodel' })
+  assert.deepEqual(parseDelegateRoute('some-model'), { provider: 'deepseek-official', model: 'some-model' })
+})
+
+test('a direct-routed turn delegates to the host model and does not fuse', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-eto-direct-'))
+  const script = join(dir, 'fake-python')
+  const route = JSON.stringify({ ok: true, result: { gewu: 'knowledge', route: 'direct', confidence: 0.7 } })
+  const fused = JSON.stringify({ ok: true, result: CONSENSUS })
+  writeFileSync(script, [
+    '#!/usr/bin/env node',
+    '// argv: [node, <script>, <RUNNER>, <tool>]',
+    'const tool = process.argv[3]',
+    `const route = ${JSON.stringify(route)}`,
+    `const fused = ${JSON.stringify(fused)}`,
+    'process.stdout.write("__ETO_RESULT__" + (tool === "eto_route" ? route : fused))',
+  ].join('\n') + '\n', 'utf8')
+  chmodSync(script, 0o755)
+
+  const calls = []
+  const llm = {
+    stream: async function* (options) {
+      calls.push(options)
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: '今天是几号' }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: '今天是几号' } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+
+  const previous = process.env.HOME
+  process.env.HOME = dir
+  try {
+    const settings = () => resolveSettings({ repo: dir, python: script }, { home: dir })
+    const adapter = new EtoAdapter({
+      settings,
+      ctx: { logger: { warn() {} }, get: name => (name === 'llm' ? llm : undefined) },
+      consensusEnv: () => childEnv(settings(), process.env),
+    })
+    const chunks = []
+    for await (const chunk of adapter.stream({
+      provider: ETO_PROVIDER,
+      model: ETO_MODEL,
+      messages: [{ role: 'user', content: [{ type: 'text', text: '今天几号' }] }],
+    })) chunks.push(chunk)
+
+    assert.equal(calls.length, 1, 'a direct turn delegates exactly once')
+    assert.equal(calls[0].provider, 'deepseek-official')
+    assert.equal(calls[0].model, 'deepseek-flash')
+    assert.deepEqual(calls[0].messages[0].content[0].text, '今天几号')
+    assert.equal(listReviews(dir).length, 0, 'a direct turn must not persist a review')
+    const end = chunks.find(chunk => chunk.type === 'block-end')
+    assert.ok(end, 'the delegate must close the text block')
+    assert.match(end.block.text, /今天是几号/)
+  } finally {
+    process.env.HOME = previous
+  }
+})
+
+test('the adapter advertises an honest context window and output budget', async () => {
+  const adapter = new EtoAdapter({ settings: () => ({}), ctx: { logger: { warn() {} } }, consensusEnv: () => undefined })
+  const resolved = await adapter.resolveModel(ETO_PROVIDER, ETO_MODEL)
+  assert.ok(resolved.context.contextWindow <= 32_768, `contextWindow ${resolved.context.contextWindow} must not exceed the smallest peer`)
+  assert.ok(resolved.defaultMaxTokens <= 2_048, `defaultMaxTokens ${resolved.defaultMaxTokens} must stay a short conclusion budget`)
+})
+
+test('renderConsensus leads with the answer and omits the full JSON by default', () => {
+  const text = renderConsensus(CONSENSUS)
+  // The synthesis is the first line, before any scorecard.
+  assert.ok(text.indexOf('先补回滚方案再合并') < text.indexOf('结论：'))
+  assert.ok(text.indexOf('先补回滚方案再合并') < text.indexOf('分歧与依据'))
+  assert.ok(!text.includes('完整结果'), 'no full JSON unless requested')
+
+  const full = renderConsensus(CONSENSUS, { full: true })
+  assert.ok(full.includes('完整结果'))
+  assert.ok(full.includes('"audit_id"'))
 })

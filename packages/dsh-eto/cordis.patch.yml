@@ -31,40 +31,44 @@
           - eto_memory_write
           - eto_memory_read
 
-# "ETO 融合" mode: selecting it in the mode picker makes the session's default
-# model the eto provider, so every turn runs the three-source fusion without the
-# model having to call a tool. Declared here as a bundle patch (directory presets
-# are no longer read); to place it in a profile patch instead, copy this entry
-# into that profile's cordis.patch.yml.
+# "ETO 决策会诊" mode: the session's main model stays a real model (so it can
+# read files, edit code and call tools), and the persona inserts one
+# `eto_consensus(mode="advise")` consultation before a decision that changes
+# behaviour (write code / change config / open a PR / irreversible action).
+# Declared here as a bundle patch (directory presets are no longer read); to
+# place it in a profile patch instead, copy this entry into that profile's
+# cordis.patch.yml.
 - insert:
     - id: preset-eto-fusion
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: eto-fusion
-        name: 'ETO 融合（三源评审）'
-        description: '每轮对话自动跑三源异构融合评审（本机 Qwen × deepseek-official × qodercn/GLM），耗时 30–90 秒，免费（本机 + 免费档）。'
+        name: 'ETO 决策会诊'
+        description: '主模型仍是真模型（能调工具），在写代码/改配置/发 PR 等决策前自动调 eto_consensus(mode=advise) 做一次三源会诊（本机 Qwen × deepseek-official × qodercn/GLM）。'
         order: 19
         plugins:
           - id: agent-default-model
             name: '@deepseek-ai/dsh-agent-default-model'
             config:
-              provider: eto
-              model: eto-consensus
+              provider: deepseek-official
+              model: deepseek-flash
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: |-
-                你是「ETO 融合（三源评审）」模式。本会话的默认模型是 ETO 虚拟供应商，所以每一轮回复都会先经过三源异构融合评审：本机 Qwen、deepseek-official、qodercn/GLM 三个不同架构的模型各自给出意见，再由聚合器融合成一段结论。
+                你是「ETO 决策会诊」模式。你的主模型是真模型：能正常读文件、改代码、调工具、跑测试。
 
-                ## 这些意见是什么
-                - 它们是「三个不同架构的额外意见」，不是权威结论；融合会指出共识点与冲突点。
-                - 不要因为看到了多份观点就假装有共识；如果只有部分 peer 给出了有效评分，如实说明「结论基于 N/M 个 peer」。
-                - 如果结果标了 degraded 或某个 peer 掉队（provider 不可用/超时/无法解析），照实转述，不要粉饰成成功。
+                ## 什么时候会诊
+                - 在做出「会改变行为」的决策之前——写/改代码、改配置、发 PR、删资源、跑不可逆操作——先调 eto_consensus(mode="advise") 会诊一次。
+                - 会诊输入：你「打算怎么做」的一小段计划（不是整个会话）。
+                - 拿到 synthesis / risks / disagreements 后，采纳其中的建议、规避风险再继续，不要假装没看到分歧。
 
-                ## 时间与成本
-                - 每轮融合耗时约 30–90 秒（真的在调多个模型），请耐心等待，不要提前下结论。
-                - 全程免费（本机模型 + 免费档云端模型），不烧付费额度。
+                ## 什么时候不要会诊
+                - 普通问答、解释、闲聊不触发会诊，直接回答。
+                - 同一个方案已经会诊过且没有新变化时，不要重复会诊。
+
+                ## 会诊是什么
+                - 它是三个不同架构模型的额外意见，不是权威结论；照实转述 degraded 或掉队的 peer，不要粉饰成成功。
 
                 ## 输出习惯
-                - 先给融合后的结论与评分，再给各 peer 的意见要点与分歧点。
                 - 用中文工作；一次只解决一件事。

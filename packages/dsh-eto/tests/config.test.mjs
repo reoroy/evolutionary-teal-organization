@@ -65,3 +65,13 @@ test('the page view carries no absolute home path', () => {
 test('the schema rejects a timeout below the floor', () => {
   assert.throws(() => Config({ toolTimeoutMs: 10 }))
 })
+
+test('delegateModel defaults to the stated route and includeFullResult is off', () => {
+  const settings = resolveSettings({}, { home: '/h' })
+  assert.equal(settings.delegateModel, 'deepseek-official/deepseek-flash')
+  assert.equal(settings.includeFullResult, false)
+
+  const on = resolveSettings({ includeFullResult: true, delegateModel: 'dsh/x' }, { home: '/h' })
+  assert.equal(on.includeFullResult, true)
+  assert.equal(on.delegateModel, 'dsh/x')
+})

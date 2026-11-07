@@ -73,6 +73,9 @@ window.__ModuleLoader__.load({
         provider: 'provider',
         model: 'model',
         peerScoreTimeout: '评分超时（毫秒）',
+        delegateModel: '直答委托模型',
+        delegateHint: '普通问题路由为 direct 时，用这个 provider/model 直接回答（默认 deepseek-official/deepseek-flash）。',
+        includeFullResult: '默认附完整 JSON 结果',
         envPassthrough: '透传环境变量（逗号分隔）',
         pathsHint: '路径支持 ~；留空使用默认值（$DSH_ETO_REPO 或 ~/src/eto）。',
         notWritable: '当前页面无法持久化设置（远程访问时只在本浏览器生效）。',
@@ -162,6 +165,9 @@ window.__ModuleLoader__.load({
         provider: 'provider',
         model: 'model',
         peerScoreTimeout: 'Scoring timeout (ms)',
+        delegateModel: 'Direct-answer delegate',
+        delegateHint: 'Direct-routed turns are answered by this provider/model (default deepseek-official/deepseek-flash).',
+        includeFullResult: 'Always append the full JSON result',
         envPassthrough: 'Pass-through env names (comma separated)',
         pathsHint: 'Paths accept ~; empty means the default ($DSH_ETO_REPO or ~/src/eto).',
         notWritable: 'This page cannot persist settings (remote access keeps them in this browser only).',
@@ -655,7 +661,7 @@ window.__ModuleLoader__.load({
         setMessage(null)
         try {
           const ops = []
-          const scalar = ['repo', 'venv', 'python', 'peerScoreProvider', 'peerScoreModel', 'toolTimeoutMs', 'peerScoreTimeoutMs']
+          const scalar = ['repo', 'venv', 'python', 'peerScoreProvider', 'peerScoreModel', 'toolTimeoutMs', 'peerScoreTimeoutMs', 'delegateModel']
           for (const key of scalar) {
             const next = draft[key]
             const before = value ? value[key] : undefined
@@ -667,6 +673,11 @@ window.__ModuleLoader__.load({
             const before = (value && value[key]) ?? []
             if (JSON.stringify(next) === JSON.stringify(before)) continue
             ops.push({ op: 'set', path: [key], value: next })
+          }
+          for (const key of ['includeFullResult']) {
+            const next = Boolean(draft[key])
+            const before = Boolean(value && value[key])
+            if (next !== before) ops.push({ op: 'set', path: [key], value: next })
           }
           if (ops.length === 0) {
             setState('idle')
@@ -746,6 +757,14 @@ window.__ModuleLoader__.load({
               value: (draft.envPassthrough || []).join(', '),
               onChange: (next) => set('envPassthrough')(next.split(',').map(item => item.trim()).filter(Boolean)),
             }))),
+          h('div', { style: styles.card },
+            h('div', { style: styles.cardTitle }, t.delegateModel),
+            h(Field, { label: t.delegateModel }, h(Input, { value: draft.delegateModel, onChange: set('delegateModel'), placeholder: 'deepseek-official/deepseek-flash' })),
+            h('div', { style: styles.muted }, t.delegateHint),
+            h('div', { style: styles.checkGrid },
+              h('label', { style: styles.check },
+                h('input', { type: 'checkbox', checked: Boolean(draft.includeFullResult), onChange: () => set('includeFullResult')(!draft.includeFullResult) }),
+                h('span', null, t.includeFullResult)))),
           h('div', { style: { display: 'flex', alignItems: 'center', gap: '12px' } },
             h(Button, { primary: true, disabled: state === 'saving', onClick: save }, state === 'saving' ? t.saving : t.save),
             state === 'saved' ? h('span', { style: styles.ok }, t.saved) : null,

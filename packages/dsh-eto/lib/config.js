@@ -31,6 +31,10 @@ export const Config = z.object({
   peerScoreModel: z.string().default('').volatile(),
   /** Deadline for one `eto_peer_score` model call. */
   peerScoreTimeoutMs: z.number().min(5_000).max(600_000).default(90_000).volatile(),
+  /** `provider/model` route the direct-answer delegate uses (routing gate A). */
+  delegateModel: z.string().default('deepseek-official/deepseek-flash').volatile(),
+  /** Always append the full consensus JSON to the fused reply (else only on request). */
+  includeFullResult: z.boolean().default(false).volatile(),
   /** Environment names forwarded to the child, beyond the non-secret baseline. */
   envPassthrough: z.array(z.string()).default([]).volatile(),
 })
@@ -83,6 +87,10 @@ export function resolveSettings(raw, options = {}) {
     const resolved = current(candidate)
     return typeof resolved === 'number' && Number.isFinite(resolved) ? resolved : fallback
   }
+  const bool = (candidate, fallback) => {
+    const resolved = current(candidate)
+    return typeof resolved === 'boolean' ? resolved : fallback
+  }
   const list = candidate => {
     const resolved = current(candidate)
     return Array.isArray(resolved) ? resolved.filter(item => typeof item === 'string' && item.trim() !== '').map(item => item.trim()) : []
@@ -101,6 +109,8 @@ export function resolveSettings(raw, options = {}) {
     peerScoreProvider: str(value.peerScoreProvider, ''),
     peerScoreModel: str(value.peerScoreModel, ''),
     peerScoreTimeoutMs: num(value.peerScoreTimeoutMs, 90_000),
+    delegateModel: str(value.delegateModel, 'deepseek-official/deepseek-flash'),
+    includeFullResult: bool(value.includeFullResult, false),
     envPassthrough: list(value.envPassthrough),
   }
 }
@@ -116,6 +126,8 @@ export function settingsView(settings) {
     peerScoreProvider: settings.peerScoreProvider,
     peerScoreModel: settings.peerScoreModel,
     peerScoreTimeoutMs: settings.peerScoreTimeoutMs,
+    delegateModel: settings.delegateModel,
+    includeFullResult: settings.includeFullResult,
     envPassthrough: settings.envPassthrough,
   }
 }
