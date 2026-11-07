@@ -246,6 +246,36 @@ test('ETO caps its own input budget and reports the clip instead of cutting sile
   assert.ok(huge.notice.includes('超过 ETO 自管预算'), 'the clip must be reported')
 })
 
+test('a delegated turn forwards the tools the harness offered', async () => {
+  // Without `tools` the delegated model has no schema to fill and emits its native tool-call
+  // markup as text, so nothing executes. This is the regression that made a "change this line"
+  // request come back as a paragraph instead of an edit.
+  const seen = []
+  const llm = {
+    stream: async function * (options) { seen.push(options); yield { type: 'finish', reason: { kind: 'stop' } } },
+    resolveModel: async () => ({ context: { contextWindow: 131_072 } }),
+  }
+  const adapter = new EtoAdapter({
+    settings: () => ({ delegateModel: 'deepseek-official/deepseek-flash' }),
+    ctx: { get: name => (name === 'llm' ? llm : undefined), logger: { warn() {} } },
+    consensusEnv: () => undefined,
+  })
+  const tools = [{ name: 'edit', description: 'edit a file', parameters: { type: 'object' } }]
+  const messages = [{ role: 'user', content: [{ type: 'text', text: 'change line 2' }] }]
+
+  // Bypass the route gate: go straight through the delegate path.
+  for await (const _ of adapter.delegate({ messages, tools, toolChoice: 'auto', maxTokens: 1234, system: 'sys', signal: undefined })) { /* drain */ }
+
+  assert.equal(seen.length, 1)
+  assert.deepEqual(seen[0].tools, tools, 'tools must reach the delegated model, or it cannot act')
+  assert.equal(seen[0].toolChoice, 'auto')
+  assert.equal(seen[0].maxTokens, 1234)
+  assert.equal(seen[0].system, 'sys')
+  assert.equal(seen[0].provider, 'deepseek-official')
+  assert.equal(seen[0].model, 'deepseek-flash')
+  assert.deepEqual(seen[0].messages, messages)
+})
+
 test('renderConsensus leads with the answer and omits the full JSON by default', () => {
   const text = renderConsensus(CONSENSUS)
   // The synthesis is the first line, before any scorecard.
