@@ -24,7 +24,7 @@ import { existsSync } from 'node:fs'
 import { Config, resolveSettings, settingsView } from './config.js'
 import { listReviews, readReview } from './reviews.js'
 import { runTool } from './spawn.js'
-import { TOOL_NAMES, createTools, scorePeerText, callLlmRaw } from './tools.js'
+import { TOOL_NAMES, createTools, runConsensus, scorePeerText, callLlmRaw } from './tools.js'
 
 /** Peers a panel review asks, in the order ETO itself uses for T1. */
 const REVIEW_PEERS = ['researcher', 'coder', 'auditor']
@@ -417,10 +417,20 @@ export function apply(ctx, entryConfig) {
             }
             const settings = settingsRef()
             const started = Date.now()
-            // Consensus makes several real LLM calls; 30 s would cut it off. 180 s matches the
-            // tool-call budget the model-facing path already uses.
-            const budget = tool === 'eto_consensus' ? 180_000 : 30_000
-            const result = await runTool({ settings, tool, args: (input.args && typeof input.args === 'object') ? input.args : {}, timeoutMs: budget, env: dshEndpointApi.consensusEnv() })
+            const args = (input.args && typeof input.args === 'object') ? input.args : {}
+            // eto_consensus persists to the review ledger, so it goes through the
+            // shared runConsensus path (writes ~/.eto/reviews/ on success).
+            if (tool === 'eto_consensus') {
+              try {
+                const value = await runConsensus({ settings: settingsRef, ctx, args, env: dshEndpointApi.consensusEnv() })
+                json(res, 200, { ok: true, value, error: null, timedOut: false, latencyMs: Date.now() - started })
+              } catch (error) {
+                json(res, 200, { ok: false, value: undefined, error: error instanceof Error ? error.message : String(error), timedOut: false, latencyMs: Date.now() - started })
+              }
+              return
+            }
+            // Other runnable tools are quick reads/writes; a 30 s budget is plenty.
+            const result = await runTool({ settings, tool, args, timeoutMs: 30_000, env: dshEndpointApi.consensusEnv() })
             json(res, 200, {
               ok: result.ok,
               value: result.ok ? result.value : undefined,

@@ -93,6 +93,39 @@ function failureOf(tool, result) {
 }
 
 /**
+ * Run one `eto_consensus` and persist its record to the review ledger. This is
+ * the single shared path for every way a consensus can be triggered: the
+ * model-facing tool, the workbench `/run` route, and the virtual provider.
+ *
+ * A successful result is always written to `~/.eto/reviews/` (best-effort: a
+ * lost write never turns a real consensus into a tool error), and a failed
+ * run throws the same locatable error the tool path already reports.
+ *
+ * @param {object} options
+ * @param {() => object} options.settings - resolves the current settings snapshot.
+ * @param {import('@deepseek-ai/cordis').Context} options.ctx - plugin context (logging).
+ * @param {object} options.args - tool arguments (plan, peers).
+ * @param {AbortSignal} [options.signal] - caller cancellation.
+ * @param {NodeJS.ProcessEnv} [options.env] - child environment override.
+ * @returns {Promise<object>} the consensus value ETO returned.
+ */
+export async function runConsensus({ settings, ctx, args, signal, env }) {
+  const plan = typeof args.plan === 'string' ? args.plan.trim() : ''
+  const started = Date.now()
+  const result = await runTool({ settings: settings(), tool: 'eto_consensus', args, signal, env })
+  if (!result.ok) throw failureOf('eto_consensus', result)
+  const value = result.value
+  const written = persistReview({
+    at: new Date(started).toISOString(),
+    plan,
+    elapsedMs: result.durationMs ?? (Date.now() - started),
+    ...value,
+  })
+  if (!written.ok) ctx.logger?.warn?.(`dsh-eto: could not persist consensus review: ${written.error}`)
+  return value
+}
+
+/**
  * Build the tool definitions for one plugin instance.
  * @param {object} options
  * @param {import('@deepseek-ai/cordis').Context} options.ctx - plugin context.
@@ -156,21 +189,7 @@ export function createTools({ ctx, settings }) {
       // best-effort: a lost write must never turn a real consensus into a tool
       // error. The result the model sees is unchanged — only the ledger gains a
       // record (audit_id, plan, elapsed time) beside ETO's own result shape.
-      execute: async (args, exec) => {
-        const plan = typeof args.plan === 'string' ? args.plan.trim() : ''
-        const started = Date.now()
-        const result = await runTool({ settings: settings(), tool: 'eto_consensus', args, signal: exec.signal, env: consensusEnv() })
-        if (!result.ok) throw failureOf('eto_consensus', result)
-        const value = result.value
-        const written = persistReview({
-          at: new Date(started).toISOString(),
-          plan,
-          elapsedMs: result.durationMs ?? (Date.now() - started),
-          ...value,
-        })
-        if (!written.ok) ctx.logger?.warn?.(`dsh-eto: could not persist consensus review: ${written.error}`)
-        return value
-      },
+      execute: (args, exec) => runConsensus({ settings, ctx, args, signal: exec.signal, env: consensusEnv() }),
     }),
 
     eto('eto_route', {
