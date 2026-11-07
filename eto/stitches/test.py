@@ -10,9 +10,11 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).parent
 PY = sys.executable
 
-def run(script: Path, payload: dict) -> subprocess.CompletedProcess:
+def run(script: Path, payload: dict, timeout: int = 180) -> subprocess.CompletedProcess:
+    """跑一个 stitch 脚本。**默认放宽到 180s**：本机 8B 冷启动单次 30-60s，10s 会把「慢」
+    误报成「挂」（2026-11-06 反复踩）。纯函数用例仍是毫秒级，上限不影响它们。"""
     inp = json.dumps(payload)
-    return subprocess.run([PY, str(script)], input=inp, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+    return subprocess.run([PY, str(script)], input=inp, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
 
 OK_MARK = "PASS"
 FAIL_MARK = "FAIL"
@@ -26,7 +28,6 @@ all_ok = True
 
 cases = [
     ("comms/a2a.py",       {"fn": "execute_plan",    "args": ["task", ["a","b"]]}),
-    ("consensus/vote.py",  {"fn": "peer_review",     "args": ["plan", ["x","y"]]}),
     ("election/elect.py",  {"fn": "elect",           "args": [[["r",0.9],["c",0.5]]]}),
 ]
 for name, payload in cases:
@@ -116,6 +117,11 @@ os.unlink(_ELEC_STATE)
 r = run(ROOT / "consensus/vote.py", {"fn": "peer_review", "args": ["plan", []]})
 p = ok(r) and '"status": "degraded"' in r.stdout and '"final_score": null' in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} vote empty peers    degraded, no fake score")
+
+# consensus 可调用性（真调模型 → 放宽超时；只验结构，不判分数高低）
+r = run(ROOT / "consensus/vote.py", {"fn": "peer_review", "args": ["plan", ["researcher"]]}, timeout=300)
+p = ok(r) and '"status"' in r.stdout and ('"fusion"' in r.stdout or '"votes"' in r.stdout)
+print(f"{OK_MARK if p else FAIL_MARK} consensus 可调用      返回 status/fusion 结构")
 all_ok = all_ok and p
 
 # 空 steps → outputs=[]
@@ -147,13 +153,13 @@ all_ok = all_ok and p
 # ── Phase 5: 共识三阶段测试 ──────────────────────────
 
 # T2/T3 逻辑测试：用预设评分验证审议+终审路径（不依赖 LLM）
-r = run(ROOT / "consensus/vote.py", {"fn": "_test_deliberation", "args": []})
+r = run(ROOT / "consensus/vote.py", {"fn": "_test_deliberation", "args": []}, timeout=300)
 p = ok(r) and '"verdict"' in r.stdout and '"actions"' in r.stdout and '"deliberation"' in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} consensus 3-phase     deliberation+verdict+actions")
 all_ok = all_ok and p
 
 # 真实 LLM 调用：简单任务无分歧
-r = run(ROOT / "consensus/vote.py", {"fn": "peer_review", "args": ["写一个hello world", ["researcher", "coder", "auditor"]]})
+r = run(ROOT / "consensus/vote.py", {"fn": "peer_review", "args": ["写一个hello world", ["researcher", "coder", "auditor"]]}, timeout=300)
 p = ok(r) and '"status"' in r.stdout
 print(f"{OK_MARK if p else FAIL_MARK} consensus simple     无分歧通过")
 all_ok = all_ok and p
@@ -189,7 +195,7 @@ if _HAS_MCP:
     _mock_cfg = {"provider": "mcp",
                  "mcp_server": [PY, str(ROOT.parent.parent / "tests" / "mock_agent_mcp_server.py")],
                  "mcp_tool": "agent_review"}
-    r = run(ROOT / "consensus/vote.py", {"fn": "_call_mcp_agent", "args": [json.dumps(_mock_cfg), "你是一个评审专家。", "请对以下执行计划评分"]})
+    r = run(ROOT / "consensus/vote.py", {"fn": "_call_mcp_agent", "args": [json.dumps(_mock_cfg), "你是一个评审专家。", "请对以下执行计划评分"]}, timeout=300)
     try:
         _mcp_out = json.loads(r.stdout) if ok(r) else {}
     except json.JSONDecodeError:
@@ -205,7 +211,7 @@ if _HAS_MCP:
     all_ok = all_ok and p
 
     # 完整链路：_call_peer 走 mcp 分支（覆盖 peer 名记录与 sys.path 修复）
-    r = run(ROOT / "consensus/vote.py", {"fn": "_call_peer", "args": ["mock_peer", "你是一个评审专家。", "请评分"]})
+    r = run(ROOT / "consensus/vote.py", {"fn": "_call_peer", "args": ["mock_peer", "你是一个评审专家。", "请评分"]}, timeout=300)
     # _call_peer 对未知 peer 回退到 researcher(ollama)；mcp 分支只在配置存在时触发。
     # 这里直接断言无 _error 且不崩溃（默认 peer 无 mcp 配置时返回 ""）。
     p = ok(r) and "_error" not in r.stdout
@@ -579,7 +585,7 @@ with tempfile.TemporaryDirectory() as tmp_home:
          "res = json.loads(run_iteration('反复执行测试任务', max_rounds=2, threshold=0.99)); "
          "print(json.dumps({'rounds': res['rounds'], 'converged': res['converged'], "
          "'has_outputs': len(res['outputs']) == res['rounds']}))" % ()],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, env=env,
     )
     try:
         _it3 = json.loads(r.stdout) if r.stdout.strip() else {}
@@ -603,13 +609,18 @@ with tempfile.TemporaryDirectory() as tmp_home:
          "res = json.loads(run_rework('写一个hello world', %r, 1)); "
          "print(json.dumps({'rounds_run': res['rounds_run'], 'success': res['success'], "
          "'loop_type': res['loop']['type']}))" % _steps],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, env=env,
     )
     try:
         _rw2 = json.loads(r.stdout) if r.stdout.strip() else {}
     except json.JSONDecodeError:
         _rw2 = {}
-    p = r.returncode == 0 and _rw2.get("rounds_run") == 2 and _rw2.get("loop_type") == "rework"
+    # provider 可用时第一轮就成功（rounds_run=1），不可用时触发重跑（=2）。
+    # 环境无关的断言：loop 类型正确，且「失败必然重跑」这条不变量成立。
+    _rounds = _rw2.get("rounds_run")
+    p = (r.returncode == 0 and _rw2.get("loop_type") == "rework"
+         and _rounds in (1, 2)
+         and (_rw2.get("success") is True or _rounds == 2))
     print(f"{OK_MARK if p else FAIL_MARK} rework真实链路     失败重跑+落账")
     all_ok = all_ok and p
     # 落账进 shared_memory（集体回顾的数据源）：agent 必须是真实失败的 agent，
@@ -763,7 +774,7 @@ with tempfile.TemporaryDirectory() as tmp_home:
 with tempfile.TemporaryDirectory() as tmp_home:
     env = {**os.environ, "HOME": tmp_home}
     r = subprocess.run([PY, str(ROOT / "reflection.py"), "reflect"],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, env=env)
     p = r.returncode == 0 and "集体回顾报告" in r.stdout
     print(f"{OK_MARK if p else FAIL_MARK} reflect CLI         手动触发输出报告")
     all_ok = all_ok and p
@@ -933,13 +944,14 @@ with tempfile.TemporaryDirectory() as tmp_home:
     wf_step_gov = json.dumps({"step": 1, "agent": "coder", "description": "编码", "system_prompt": "写代码", "skills": [], "mcp_tools": []})
     r1 = subprocess.run([PY, str(ROOT / "bidding" / "workflow.py")],
                         input=json.dumps({"fn": "run_step", "args": [wf_step_gov, "写一个hello world", "wf-budget"]}),
-                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, env=env)
     r2 = subprocess.run([PY, str(ROOT / "bidding" / "workflow.py")],
                         input=json.dumps({"fn": "run_step", "args": [wf_step_gov, "再写一个", "wf-budget"]}),
-                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=env)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, env=env)
     s1, s2 = _gov_out(r1), _gov_out(r2)
-    p = (s1.get("status") == "failed"  # 无 provider 环境本就 failed（预算 1/1 已记账）
-         and "_governance" not in s1
+    # 第一轮的成败取决于 provider（有回落时可能 ok），所以不再断言 s1 的状态 ——
+    # 本用例要守的是「第二轮被预算拒绝且如实上报」，不是「第一轮必失败」。
+    p = ("_governance" not in s1
          and s2.get("status") == "failed"
          and str(s2.get("error", "")).startswith("[BUDGET_EXCEEDED]"))
     print(f"{OK_MARK if p else FAIL_MARK} gov 工作流超预算停  终止+如实上报")
