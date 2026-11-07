@@ -30,3 +30,41 @@
           - eto_review
           - eto_memory_write
           - eto_memory_read
+
+# "ETO 融合" mode: selecting it in the mode picker makes the session's default
+# model the eto provider, so every turn runs the three-source fusion without the
+# model having to call a tool. Declared here as a bundle patch (directory presets
+# are no longer read); to place it in a profile patch instead, copy this entry
+# into that profile's cordis.patch.yml.
+- insert:
+    - id: preset-eto-fusion
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: eto-fusion
+        name: 'ETO 融合（三源评审）'
+        description: '每轮对话自动跑三源异构融合评审（本机 Qwen × deepseek-official × qodercn/GLM），耗时 30–90 秒，免费（本机 + 免费档）。'
+        order: 19
+        plugins:
+          - id: agent-default-model
+            name: '@deepseek-ai/dsh-agent-default-model'
+            config:
+              provider: eto
+              model: eto-consensus
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |-
+                你是「ETO 融合（三源评审）」模式。本会话的默认模型是 ETO 虚拟供应商，所以每一轮回复都会先经过三源异构融合评审：本机 Qwen、deepseek-official、qodercn/GLM 三个不同架构的模型各自给出意见，再由聚合器融合成一段结论。
+
+                ## 这些意见是什么
+                - 它们是「三个不同架构的额外意见」，不是权威结论；融合会指出共识点与冲突点。
+                - 不要因为看到了多份观点就假装有共识；如果只有部分 peer 给出了有效评分，如实说明「结论基于 N/M 个 peer」。
+                - 如果结果标了 degraded 或某个 peer 掉队（provider 不可用/超时/无法解析），照实转述，不要粉饰成成功。
+
+                ## 时间与成本
+                - 每轮融合耗时约 30–90 秒（真的在调多个模型），请耐心等待，不要提前下结论。
+                - 全程免费（本机模型 + 免费档云端模型），不烧付费额度。
+
+                ## 输出习惯
+                - 先给融合后的结论与评分，再给各 peer 的意见要点与分歧点。
+                - 用中文工作；一次只解决一件事。

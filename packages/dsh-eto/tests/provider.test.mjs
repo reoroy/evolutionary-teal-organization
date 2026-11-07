@@ -1,0 +1,148 @@
+/**
+ * ETO as a virtual provider: adapter metadata, registration and the stream.
+ *
+ * The stream test runs against a fake interpreter (the same seam spawn.test.mjs
+ * uses) so the full chunk protocol — block-start → text deltas → block-end →
+ * usage → finish — and the consensus persistence path are exercised without
+ * any real LLM or Ollama.
+ */
+import assert from 'node:assert/strict'
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+import { resolveSettings } from '../lib/config.js'
+import { apply } from '../lib/index.js'
+import { ETO_MODEL, ETO_PROVIDER, EtoAdapter, renderConsensus } from '../lib/provider.js'
+import { listReviews } from '../lib/reviews.js'
+import { childEnv } from '../lib/spawn.js'
+
+const CONSENSUS = {
+  status: 'approved',
+  final_score: 0.75,
+  votes: [
+    { peer: 'researcher', provider: 'ollama', model: 'qwen3-8b-arb:latest', score: 0.8, concern: '缺量化指标' },
+    { peer: 'coder', provider: 'dsh', model: 'deepseek-official/deepseek-flash', score: 0.7, concern: '技术债' },
+    { peer: 'auditor', provider: 'dsh', model: 'qodercn/gfmodel', score: 0.75, concern: '云端/本地一致性' },
+  ],
+  fusion: {
+    sources: [
+      { peer: 'researcher', provider: 'ollama', model: 'qwen3-8b-arb:latest' },
+      { peer: 'coder', provider: 'dsh', model: 'deepseek-official/deepseek-flash' },
+      { peer: 'auditor', provider: 'dsh', model: 'qodercn/gfmodel' },
+    ],
+    distinct_providers: 3,
+    aggregator: 'ollama/qwen3-8b-arb:latest',
+  },
+  synthesis: '先补回滚方案再合并。',
+  deliberation: { rounds: 0, strategies: {} },
+  actions: [],
+  audit_id: 'v1234567890',
+}
+
+const fakeCtx = (services = {}) => {
+  const registered = new Map()
+  const routes = []
+  const logs = []
+  const ctx = {
+    logger: { info: m => logs.push(['info', String(m)]), warn: m => logs.push(['warn', String(m)]) },
+    tools: { register: definition => { registered.set(definition.name, definition); return () => registered.delete(definition.name) } },
+    get: name => services[name],
+    on() { return () => {} },
+    effect(fn) { const dispose = fn(); return typeof dispose === 'function' ? dispose : () => {} },
+    inject(names, fn) {
+      const present = names.filter(name => services[name] !== undefined)
+      if (present.length === 0) return undefined
+      const child = Object.create(ctx)
+      for (const name of names) child[name] = services[name]
+      return fn(child)
+    },
+  }
+  return { ctx, registered, routes, logs }
+}
+
+const webServer = routes => ({ register(route) { routes.push(route); return () => {} } })
+
+/** A settings object whose `python` is a script emitting one consensus result. */
+function withFakePython(result) {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-eto-provider-'))
+  const script = join(dir, 'fake-python')
+  const sentinel = JSON.stringify({ ok: true, result })
+  writeFileSync(script, `#!/usr/bin/env node\nprocess.stdout.write("__ETO_RESULT__" + ${JSON.stringify(sentinel)})\n`, 'utf8')
+  chmodSync(script, 0o755)
+  return { settings: () => resolveSettings({ repo: dir, python: script }, { home: dir }), dir, script }
+}
+
+test('renderConsensus names the three fused sources and the distinct-provider count', () => {
+  const text = renderConsensus(CONSENSUS)
+  assert.match(text, /3 个不同架构/)
+  assert.match(text, /qwen3-8b-arb/)
+  assert.match(text, /deepseek-official/)
+  assert.match(text, /qodercn\/gfmodel/)
+  assert.match(text, /先补回滚方案再合并/)
+})
+
+test('the eto adapter advertises exactly one model with honest metadata', async () => {
+  const adapter = new EtoAdapter({ settings: () => ({}), ctx: { logger: { warn() {} } }, consensusEnv: () => undefined })
+  assert.deepEqual(adapter.providerInfo(ETO_PROVIDER), { id: ETO_PROVIDER, name: 'ETO' })
+  const models = await adapter.listModels(ETO_PROVIDER)
+  assert.equal(models.length, 1)
+  assert.equal(models[0].id, ETO_MODEL)
+  assert.equal(models[0].provider, ETO_PROVIDER)
+  assert.deepEqual(models[0].inputModalities, ['text'])
+  const resolved = await adapter.resolveModel(ETO_PROVIDER, ETO_MODEL)
+  assert.equal(resolved.id, ETO_MODEL)
+  assert.ok(resolved.context.contextWindow > 0)
+  assert.ok(resolved.defaultMaxTokens > 0)
+})
+
+test('apply registers the eto provider when the host composes an llm service', () => {
+  const routes = []
+  const registrations = []
+  const llm = { registerAdapter: (providers, adapter) => { registrations.push({ providers, adapter }); return () => {} } }
+  const { ctx } = fakeCtx({ webServer: webServer(routes), llm })
+  apply(ctx, { repo: '/definitely/not/here' })
+  assert.equal(registrations.length, 1)
+  assert.deepEqual(registrations[0].providers, [ETO_PROVIDER])
+  assert.ok(registrations[0].adapter instanceof EtoAdapter)
+})
+
+test('a host without an llm service keeps the tools and registers no provider', () => {
+  const routes = []
+  const { ctx, registered } = fakeCtx({ webServer: webServer(routes) })
+  apply(ctx, { repo: '/definitely/not/here' })
+  assert.ok(registered.size > 0, 'tools still register')
+})
+
+test('the stream runs one consensus, persists a review, and ends with a stop finish', async () => {
+  const { settings, dir } = withFakePython(CONSENSUS)
+  const previous = process.env.HOME
+  process.env.HOME = dir
+  try {
+    const adapter = new EtoAdapter({
+      settings,
+      ctx: { logger: { warn() {} } },
+      consensusEnv: () => childEnv(settings(), process.env),
+    })
+    const chunks = []
+    for await (const chunk of adapter.stream({
+      provider: ETO_PROVIDER,
+      model: ETO_MODEL,
+      messages: [{ role: 'user', content: [{ type: 'text', text: '评审这个合并方案' }] }],
+    })) chunks.push(chunk)
+
+    assert.equal(chunks[0].type, 'block-start')
+    assert.ok(chunks.some(chunk => chunk.type === 'text-delta'))
+    const end = chunks.find(chunk => chunk.type === 'block-end')
+    assert.ok(end, 'the stream must close the text block')
+    assert.match(end.block.text, /3 个不同架构/)
+    assert.deepEqual(chunks[chunks.length - 1], { type: 'finish', reason: { kind: 'stop' } })
+
+    const reviews = listReviews(dir)
+    assert.equal(reviews.length, 1)
+    assert.equal(reviews[0].fusion.distinct_providers, 3)
+    assert.equal(reviews[0].plan, '评审这个合并方案')
+  } finally {
+    process.env.HOME = previous
+  }
+})

@@ -2,9 +2,10 @@
 
 [ETO](https://github.com/reoroy/evolutionary-teal-organization)（青色组织多 Agent 编排库）的 **DeepSeek Harness 独立插件**。
 
-一个插件给 DSH 三样东西：
+一个插件给 DSH 四样东西：
 
 - **14 个工具**直接注册在 `ctx.tools` 上（无 `mcp__` 前缀、不经过 MCP 握手）
+- **虚拟 provider `eto`**：在模型选择器里选 `eto / eto-consensus`，每轮对话自动跑三源异构融合（本机 Qwen × deepseek-official × qodercn/GLM）
 - **侧边栏入口 + 信息面板**：ETO 版本/commit、14 个工具可用状态、最近共识、路由统计
 - **设置面板**：仓库/虚拟环境/解释器、工具白名单、`eto_peer_score` 的评分模型、测试连接
 
@@ -74,6 +75,20 @@ DSH_HOME="$HOME/.dsh" dsh plugin --profile desktop add link:$HOME/src/dsh-eto
 | `envPassthrough` | `[]` | 额外透传给子进程的环境变量名 |
 
 路径支持 `~`。面板只显示 `~` 相对路径，不把本机绝对路径带到页面上。
+
+## 虚拟 provider：把 ETO 当成一个模型来选
+
+选它就像选模型——每轮对话自动跑三源异构融合，不用让模型主动调 `eto_consensus`。
+
+- **provider**：`eto`；**model**：`eto-consensus`
+- **每轮**：本机 Qwen（ollama）× `deepseek-official/deepseek-flash` × `qodercn/gfmodel` → 聚合器融合成一段结论
+- **流式返回**：符合 DSH 的 llm 契约（`block-start` → `text-delta` → `block-end` → `usage` → `finish`）
+- **失败如实报错**：某 peer 掉队会标 `ollama(fallback)` 或 `degraded`，绝不静默回落成单模型
+- 融合本身仍在 `eto/stitches/consensus/vote.py`，provider 只是适配层，复用同一条 `runTool({ tool: 'eto_consensus' })` 通道
+
+`ETO 融合（三源评审）` 预设（本插件 bundle patch 里的 `preset-eto-fusion` 声明行）把这个 provider 设为会话默认模型：在**模式选择**里选 `ETO 融合`，进场就自动触发，每轮都跑融合。预设用 `@deepseek-ai/dsh-agent-default-model` 把 `provider: eto, model: eto-consensus` 钉进预设 scope。
+
+探针 `GET /@dsh-eto/api/status` 的 `providers` 字段会列出已注册的虚拟 provider（注册成功时为 `["eto"]`）。
 
 ## 工作原理
 
