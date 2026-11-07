@@ -10,7 +10,7 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("eto", instructions="ETO 青色组织多 Agent 编排系统 - 共识评分 / 路由分析 / Peer 配置")
 
 @mcp.tool(description="同侪共识：review 模式返回 status/final_score/votes/deliberation/actions；advise 模式返回建议/分歧/风险（不含评分）")
-def eto_consensus(plan: str, peers: list[str] | None = None, mode: str = "review") -> str:
+def eto_consensus(plan: str, peers: list[str] | None = None, mode: str = "advise") -> str:
     from eto.stitches.consensus.vote import peer_advise, peer_review
     if mode == "advise":
         result = peer_advise(plan, peers or ["researcher", "coder", "auditor"])

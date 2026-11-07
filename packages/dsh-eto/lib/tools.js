@@ -192,7 +192,7 @@ export function createTools({ ctx, settings }) {
       parameters: objectSchema({
         plan: string('要评审或会诊的执行计划全文'),
         peers: stringArray('可选 peer 列表，默认 researcher/coder/auditor'),
-        mode: string('review（评分卡）或 advise（建议/分歧/风险，不含评分），默认 review'),
+        mode: string('advise（建议/分歧/风险，不含评分，默认）或 review（评分卡，仅面板历史用）'),
       }, ['plan']),
       schema: objectSchema({
         status: string('approved | revise | reject'),
