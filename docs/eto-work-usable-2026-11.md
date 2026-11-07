@@ -11,6 +11,7 @@ supersedes: 推翻 docs/eto-redesign-v2-2026-11.md 的结论方向（会诊层�
 
 > 基线 `a77b471`（CI 主干，含 #64 预算修复）。本报告只出文档与结论，**未改一行实现代码**。
 > 每条调研结论带链接或原文引用；本机可复现的带命令，没实测的标「未实测」。
+> 修订 2026-11-07：运营者实测更正——本机 Ollama 不是 DSH provider，路线 C 的「真·不同源」上限由 3 改为 **2 个架构**（DeepSeek + GLM），见 §六。
 
 ---
 
@@ -65,8 +66,10 @@ supersedes: 推翻 docs/eto-redesign-v2-2026-11.md 的结论方向（会诊层�
   「建议 + 风险 + 分歧」（`peer_advise` 已给出），分数本身不告诉你该改什么。
 
 **而路线 C 不损失「真·不同源」**：DSH 的 `subagent` 工具本就支持给每个子代理指定不同的
-`provider`/`model`（`agentPreset`）。给 coder 子代理 deepseek、auditor 子代理本机 Qwen，就是真·不同源，
+`provider`/`model`（`agentPreset`）。给 coder 子代理 deepseek、auditor 子代理 qodercn/GLM，就是真·不同源，
 且附带完整工具循环、沙箱、独立上下文——这些都是融合层永远给不了的。
+（⚠️ 运营者 2026-11-07 实测更正：本机 Ollama 未注册成 DSH provider，子代理派不到它；
+路线 C 的「真·不同源」当前上限是 **2 个架构 DeepSeek + GLM**，不是 3 个。想上 3 源需先注册本机 Ollama 为 DSH provider，另开 issue。）
 
 所以结论不是「融合没用」，而是：**融合的独特价值（不同源）在路线 C 里用「给子代理指定不同 provider」
 就能拿到，而融合层自己却只能在三源全活时才给得出、常态降级成无独特价值的多 persona。**
@@ -159,11 +162,13 @@ ETO 的路线 A 恰好踩了它专门规避的坑（切模型重建工具集、�
 1. **沉淀三套 peer 提示词为角色 skill**（`eto/stitches/consensus/vote.py:16-20` 的 `PEER_SYSTEM_PROMPTS`）。
    - 改哪：新建 `~/.dsh/skills/eto-reviewer/{researcher,coder,auditor}.md`（或一个 SKILL.md 三个 role），
      内容 = 三套 prompt 原文 + 「何时用 / 输出什么」。
+   - ⚠️ 角色 skill 里别绑定「本机 Qwen / Ollama」当 provider——子代理只能用 DSH 已注册 provider（见第 2 条）。
    - 验收：`ls ~/.dsh/skills/eto-reviewer/` 见三个角色文件；在 DSH 会话里能 `skill` 加载并让子代理携带。
-2. **验证子代理能指定不同 provider**（C 的前提）。
-   - 改哪：无代码；用一条命令派两个子代理：coder → `provider=deepseek-official`，auditor → 本机 Qwen。
-   - 验收：两个子代理各返回一份带自己角色的独立结论；`distinct provider` 数为 2。
-   - ⚠️ 未实测：`agentPreset` 与 provider 指定能力需在真实 DSH 实例验证（本报告不改代码，未跑）。
+2. **验证子代理能指定不同 provider**（C 的前提）。✅ 已由运营者实测（2026-11-07）。
+   - 改哪：无代码；派两个子代理：`provider=deepseek-official/model=deepseek-flash` 与 `provider=qodercn/model=gfmodel`。
+     （本机 Ollama 不是 DSH provider，子代理派不到，别写「auditor 用本机 Qwen」。）
+   - 实测结果：两个都成功（`both_ok: true`）、结论不同（`distinct: true`）；`loomy`/`raccoon` 502 只吐 reasoning 不可用。
+   - 验收：`distinct provider` 数为 2（DeepSeek + GLM，当前「真·不同源」上限）。
 
 ### P1 —— 让会诊「可选、非自动、只 advise」
 
@@ -206,6 +211,7 @@ ETO 的路线 A 恰好踩了它专门规避的坑（切模型重建工具集、�
 - **读到的本仓证据**：`eto/stitches/consensus/vote.py`（peer prompt、provider 配置、串行、聚合器、评分卡）、
   `eto/extensions/eto.ts`、`packages/dsh-eto/cordis.patch.yml`（preset-eto-fusion 全文）、
   `docs/eto-assessment-2026-11.md`、`docs/eto-redesign-v2-2026-11.md`（r1/r2 掉 peer 与 56.9s/76.2s 实测）。
-- **未实测**：`subagent` 的 `agentPreset`/provider 指定能力（需真实 DSH 实例，本次不改代码未跑）；
-  `preset-eto-fusion` 自动触发是否真的触发（issue 已知事实即「未验证」）。
+- **已由运营者实测**（2026-11-07）：`subagent` 的 provider 指定能力——`deepseek-official` + `qodercn` 两源均可派、结论不同（`distinct: true`）；
+  `loomy`/`raccoon` 502（只吐 reasoning 无 text 块）；本机 `ollama` **不是** DSH provider（`vote.py` 直连 HTTP，子代理派不到）。
+- **仍未实测**：`preset-eto-fusion` 自动触发是否真的触发（issue 已知事实即「未验证」）。
 - **推断的（已标注）**：三条路线的成本/可靠性对照里，B 与 C 的定性判断是推断，非实测；A 的坑是已知事实。
