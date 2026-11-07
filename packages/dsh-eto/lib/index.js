@@ -22,9 +22,10 @@
  */
 import { existsSync } from 'node:fs'
 import { Config, resolveSettings, settingsView } from './config.js'
+import { ETO_PROVIDER, EtoAdapter } from './provider.js'
 import { listReviews, readReview } from './reviews.js'
 import { runTool } from './spawn.js'
-import { TOOL_NAMES, createTools, scorePeerText, callLlmRaw } from './tools.js'
+import { TOOL_NAMES, createTools, runConsensus, scorePeerText, callLlmRaw } from './tools.js'
 
 /** Peers a panel review asks, in the order ETO itself uses for T1. */
 const REVIEW_PEERS = ['researcher', 'coder', 'auditor']
@@ -145,13 +146,14 @@ function statusPayload(settings, now = Date.now(), extraTools = {}) {
  * Probe ETO for its own facts by running the host-only `eto_status` tool.
  * Cached briefly: the page polls, and each miss costs a Python start.
  */
-export function createStatusProbe(settingsRef, { now = Date.now, pluginTools = () => ({}), registered = () => [] } = {}) {
+export function createStatusProbe(settingsRef, { now = Date.now, pluginTools = () => ({}), registered = () => [], providers = () => [] } = {}) {
   let cached = null
   return async ({ fresh = false } = {}) => {
     if (!fresh && cached !== null && now() - cached.at < STATUS_TTL_MS) return cached.value
     const settings = settingsRef()
     const base = statusPayload(settings, now(), pluginTools())
     base.registered = registered()
+    base.providers = providers()
     if (base.problems.length > 0) {
       const value = { ...base, ok: false, eto: null, error: base.problems.map(problem => problem.message).join('\n') }
       cached = { at: now(), value }
@@ -208,7 +210,10 @@ export function apply(ctx, entryConfig) {
   // Live registration names, filled by `syncTools` below; the panel reports these
   // so "configured" and "actually registered" cannot silently diverge.
   const registered = () => [...live.keys()]
-  const probe = createStatusProbe(settingsRef, { pluginTools, registered })
+  // Virtual-provider routes this plugin registered on the llm service (just `eto`).
+  const etoProviderRegistered = { value: false }
+  const providers = () => (etoProviderRegistered.value ? [ETO_PROVIDER] : [])
+  const probe = createStatusProbe(settingsRef, { pluginTools, registered, providers })
 
   // Tools ride the plugin fiber: dispose unregisters every one of them.
   //
@@ -217,6 +222,26 @@ export function apply(ctx, entryConfig) {
   // be reconciled in place: `syncTools` adds and removes only the difference, so
   // a save takes effect on the next model request instead of on the next restart.
   const { tools: definitions, dsh: dshEndpointApi } = createTools({ ctx, settings: settingsRef })
+
+  // ETO as a virtual provider: registering the adapter makes `eto / eto-consensus`
+  // appear in the model picker. It rides an optional llm sub-fiber, so a host
+  // without an llm service keeps the tools alone; a registration failure (e.g. a
+  // duplicate route) must not take the session down.
+  ctx.inject(['llm'], llmCtx => {
+    const llm = llmCtx.llm
+    if (llm === undefined || typeof llm.registerAdapter !== 'function') return
+    try {
+      llm.registerAdapter([ETO_PROVIDER], new EtoAdapter({
+        settings: settingsRef,
+        ctx,
+        consensusEnv: dshEndpointApi.consensusEnv,
+      }))
+      etoProviderRegistered.value = true
+    } catch (error) {
+      ctx.logger?.warn?.(`dsh-eto: could not register the eto provider: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })
+
   const syncTools = () => {
     const enabled = settingsRef().enabledTools
     const unknown = enabled.filter(name => !TOOL_NAMES.includes(name))
@@ -417,10 +442,20 @@ export function apply(ctx, entryConfig) {
             }
             const settings = settingsRef()
             const started = Date.now()
-            // Consensus makes several real LLM calls; 30 s would cut it off. 180 s matches the
-            // tool-call budget the model-facing path already uses.
-            const budget = tool === 'eto_consensus' ? 180_000 : 30_000
-            const result = await runTool({ settings, tool, args: (input.args && typeof input.args === 'object') ? input.args : {}, timeoutMs: budget })
+            const args = (input.args && typeof input.args === 'object') ? input.args : {}
+            // eto_consensus persists to the review ledger, so it goes through the
+            // shared runConsensus path (writes ~/.eto/reviews/ on success).
+            if (tool === 'eto_consensus') {
+              try {
+                const value = await runConsensus({ settings: settingsRef, ctx, args, env: dshEndpointApi.consensusEnv() })
+                json(res, 200, { ok: true, value, error: null, timedOut: false, latencyMs: Date.now() - started })
+              } catch (error) {
+                json(res, 200, { ok: false, value: undefined, error: error instanceof Error ? error.message : String(error), timedOut: false, latencyMs: Date.now() - started })
+              }
+              return
+            }
+            // Other runnable tools are quick reads/writes; a 30 s budget is plenty.
+            const result = await runTool({ settings, tool, args, timeoutMs: 30_000, env: dshEndpointApi.consensusEnv() })
             json(res, 200, {
               ok: result.ok,
               value: result.ok ? result.value : undefined,
