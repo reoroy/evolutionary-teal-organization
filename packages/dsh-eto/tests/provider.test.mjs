@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { resolveSettings } from '../lib/config.js'
 import { apply } from '../lib/index.js'
-import { ETO_MODEL, ETO_PROVIDER, EtoAdapter, parseDelegateRoute, renderConsensus } from '../lib/provider.js'
+import { ETO_MODEL, ETO_PROVIDER, EtoAdapter, parseDelegateRoute, renderConsensus, capPlan } from '../lib/provider.js'
 import { listReviews } from '../lib/reviews.js'
 import { childEnv } from '../lib/spawn.js'
 
@@ -209,11 +209,41 @@ test('a direct-routed turn delegates to the host model and does not fuse', async
   }
 })
 
-test('the adapter advertises an honest context window and output budget', async () => {
+test('the adapter advertises the execution model window, not the smallest peer', async () => {
+  // ETO is a consultation layer: the session's capacity belongs to the model that executes
+  // (delegateModel), so the advertised window must come from resolving that model — pinning it
+  // to the smallest consensus peer would cap the whole session at local-qwen size.
+  const asked = []
+  const llm = {
+    resolveModel: async (provider, model) => { asked.push(`${provider}/${model}`); return { context: { contextWindow: 131_072 } } },
+  }
+  const adapter = new EtoAdapter({
+    settings: () => ({ delegateModel: 'deepseek-official/deepseek-flash' }),
+    ctx: { get: name => (name === 'llm' ? llm : undefined), logger: { warn() {} } },
+    consensusEnv: () => undefined,
+  })
+  const resolved = await adapter.resolveModel(ETO_PROVIDER, ETO_MODEL)
+  assert.deepEqual(asked, ['deepseek-official/deepseek-flash'], 'must resolve the delegate model it actually executes with')
+  assert.equal(resolved.context.contextWindow, 131_072, 'advertised window must be the execution model\'s, not a peer-sized cap')
+  assert.ok(resolved.defaultMaxTokens <= 2_048, `defaultMaxTokens ${resolved.defaultMaxTokens} must stay a short conclusion budget`)
+})
+
+test('a host without a resolvable delegate falls back instead of shrinking the session', async () => {
   const adapter = new EtoAdapter({ settings: () => ({}), ctx: { logger: { warn() {} } }, consensusEnv: () => undefined })
   const resolved = await adapter.resolveModel(ETO_PROVIDER, ETO_MODEL)
-  assert.ok(resolved.context.contextWindow <= 32_768, `contextWindow ${resolved.context.contextWindow} must not exceed the smallest peer`)
-  assert.ok(resolved.defaultMaxTokens <= 2_048, `defaultMaxTokens ${resolved.defaultMaxTokens} must stay a short conclusion budget`)
+  assert.ok(resolved.context.contextWindow >= 32_768, 'fallback must not advertise a peer-sized window')
+})
+
+test('ETO caps its own input budget and reports the clip instead of cutting silently', () => {
+  // The plan forwarded to the peers is ETO's own concern; the clip is reported, never silent,
+  // and it never becomes the session's advertised context window.
+  const short = capPlan('x'.repeat(100))
+  assert.equal(short.forwarded.length, 100)
+  assert.equal(short.notice, '', 'a plan inside the budget must not warn')
+
+  const huge = capPlan('x'.repeat(30_000))
+  assert.ok(huge.forwarded.length < 30_000, 'the forwarded plan must be clipped')
+  assert.ok(huge.notice.includes('超过 ETO 自管预算'), 'the clip must be reported')
 })
 
 test('renderConsensus leads with the answer and omits the full JSON by default', () => {

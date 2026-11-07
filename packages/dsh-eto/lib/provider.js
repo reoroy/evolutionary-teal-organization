@@ -21,8 +21,15 @@ export const ETO_PROVIDER = 'eto'
 /** The one model this provider advertises. */
 export const ETO_MODEL = 'eto-consensus'
 
-/** Advertised context window: the smallest peer (local qwen3-8b ≈ 32k) is the real limit. */
-const CONTEXT_WINDOW = 32_768
+/** Used only when the delegate model's real window cannot be resolved. */
+const FALLBACK_CONTEXT_WINDOW = 128_000
+/**
+ * ETO's own input budget, in characters, for the plan text forwarded to the peers.
+ * This is ETO's internal concern: a long conversation must not be silently cut by the
+ * smallest peer, so ETO caps what it sends and says so in the reply. It is never advertised
+ * as the session's context window — that belongs to the model that actually executes.
+ */
+const PLAN_MAX_CHARS = 24_000
 /** Default output budget: a short fusion conclusion plus a little structure. */
 const DEFAULT_MAX_TOKENS = 2_048
 /** The three peers vote.py fuses by default; keep in sync with the stitch. */
@@ -30,6 +37,19 @@ const PEERS = ['researcher', 'coder', 'auditor']
 
 /** Fallback delegate route when the setting is blank: "provider/model". */
 const DEFAULT_DELEGATE = { provider: 'deepseek-official', model: 'deepseek-flash' }
+
+/**
+ * Clip the plan to ETO's own input budget. Returns the text to forward plus the notice to
+ * show, so the clipping is reported rather than silent.
+ */
+export function capPlan(plan) {
+  const text = String(plan ?? '')
+  if (text.length <= PLAN_MAX_CHARS) return { forwarded: text, notice: '' }
+  return {
+    forwarded: text.slice(0, PLAN_MAX_CHARS),
+    notice: `⚠️ 输入 ${text.length} 字符超过 ETO 自管预算 ${PLAN_MAX_CHARS}，评审仅覆盖前 ${PLAN_MAX_CHARS} 字符。\n`,
+  }
+}
 
 /** Split a `provider/model` delegate setting into its two halves. */
 export function parseDelegateRoute(value) {
@@ -143,15 +163,27 @@ export class EtoAdapter extends LlmAdapter {
     }])
   }
 
-  resolveModel(provider, model) {
-    return Promise.resolve({
+  async resolveModel(provider, model) {
+    // The session's capacity belongs to the model that actually executes the turn, not to
+    // ETO. When a turn is routed `direct` it is delegated to `delegateModel`, so that model's
+    // window is the honest answer; DSH's compression and token budgeting then apply to the
+    // worker rather than being pinned to the smallest consensus peer.
+    const delegate = parseDelegateRoute(this.settings()?.delegateModel)
+    let contextWindow = FALLBACK_CONTEXT_WINDOW
+    try {
+      const llm = this.ctx?.get?.('llm')
+      const resolved = await llm?.resolveModel?.(delegate.provider, delegate.model)
+      const real = resolved?.context?.contextWindow
+      if (typeof real === 'number' && real > 0) contextWindow = real
+    } catch { /* keep the fallback: a resolution failure must not block the provider */ }
+    return {
       provider,
       id: model,
       name: 'ETO 三源异构共识',
-      context: { contextWindow: CONTEXT_WINDOW },
+      context: { contextWindow },
       defaultMaxTokens: DEFAULT_MAX_TOKENS,
       inputModalities: ['text'],
-    })
+    }
   }
 
   async *stream(options) {
@@ -202,12 +234,17 @@ export class EtoAdapter extends LlmAdapter {
     // fabricated per-peer stage.
     yield { type: 'text-delta', index: 0, text: '⏳ ETO 三源异构共识评审中（约 30–90 秒，免费）…\n' }
 
+    // ETO owns its own input budget: a long conversation is capped here, with an honest
+    // marker, instead of being silently cut by whichever peer is smallest.
+    const { forwarded, notice } = capPlan(plan)
+    if (notice !== '') yield { type: 'text-delta', index: 0, text: notice }
+
     let value
     try {
       value = await runConsensus({
         settings: this.settings,
         ctx: this.ctx,
-        args: { plan, peers: PEERS },
+        args: { plan: forwarded, peers: PEERS },
         signal,
         env: this.consensusEnv(),
       })
@@ -255,6 +292,10 @@ export class EtoAdapter extends LlmAdapter {
       provider: route.provider,
       model: route.model,
       messages: options.messages,
+      // Forward the caller's budget: the delegated model must answer under the same limits
+      // the harness asked for, not under ETO's fused-summary default.
+      ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+      ...(options.system === undefined ? {} : { system: options.system }),
       signal: options.signal,
     })
   }
