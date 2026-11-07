@@ -429,6 +429,28 @@ window.__ModuleLoader__.load({
       revise: { zh: '需修改', en: 'Revise', color: 'var(--dsw-alias-label-warn, #d29922)' },
       degraded: { zh: '降级', en: 'Degraded', color: 'var(--dsw-alias-label-critical, #e74c3c)' },
       partial: { zh: '只留路由', en: 'Partial', color: 'var(--dsw-alias-label-warn, #d29922)' },
+      // `advise` records carry no verdict at all: the consultation returned advice, not a score.
+      advise: { zh: '会诊', en: 'Advise', color: 'var(--dsw-alias-brand-primary)' },
+    }
+
+    /**
+     * A record is either a scorecard (`status` + `final_score`, the retired shape) or a consultation
+     * (`synthesis` + `advice/risks/disagreements`). Both live in the same ledger, so every reader has to
+     * accept both: old files stay readable, and new ones never pretend a consultation produced a score.
+     */
+    const isAdvise = record => record !== null && record !== undefined
+      && (record.status === undefined || record.status === null || record.status === 'advise' || typeof record.synthesis === 'string')
+
+    /** The consultation body, whichever field the record happens to use. */
+    const adviseBody = record => {
+      const head = typeof record?.synthesis === 'string' ? record.synthesis.trim() : ''
+      const parts = [head]
+      for (const key of ['advice', 'risks', 'disagreements']) {
+        const value = record?.[key]
+        if (typeof value === 'string' && value.trim() !== '') parts.push(value.trim())
+        else if (Array.isArray(value) && value.length > 0) parts.push(value.map(v => '- ' + String(v)).join('\n'))
+      }
+      return parts.filter(part => part !== '').join('\n\n')
     }
 
     /** A short architecture family for a provider/model pair (for `fusion.sources`). */
@@ -525,12 +547,14 @@ window.__ModuleLoader__.load({
       const scoreColor = score => (score >= 0.7 ? 'var(--dsw-alias-label-positive, #2ecc71)' : score >= 0.5 ? 'var(--dsw-alias-label-warn, #d29922)' : 'var(--dsw-alias-label-critical, #e74c3c)')
 
       const renderRow = r => {
-        const st = stOf(r)
+        const advise = isAdvise(r)
+        const st = advise ? REVIEW_STATUS.advise : stOf(r)
         const arches = distinctArches(r)
         const votes = Array.isArray(r.votes) ? r.votes : []
         const okCount = votes.filter(v => v.score !== null && v.score !== undefined).length
         const failedCount = votes.length - okCount
-        const degraded = r.degraded === true || failedCount > 0
+        // A consultation has no per-peer score, so "N peers dropped out" is meaningless there.
+        const degraded = !advise && (r.degraded === true || failedCount > 0)
         const archText = arches.length > 0
           ? `${arches.length} 架构（${arches.join('·')}）`
           : `${votes.length} peers`
@@ -543,7 +567,7 @@ window.__ModuleLoader__.load({
           },
         },
           h('div', { style: { display: 'flex', alignItems: 'center', gap: '7px' } },
-            h('span', { style: tag(st.color) }, labelOf(r.status)),
+            h('span', { style: tag(st.color) }, advise ? labelOf('advise') : labelOf(r.status)),
             h('span', { style: { ...styles.muted, fontSize: '11px' } }, fmtTime(r.at)),
             h('span', { style: { ...styles.muted, fontSize: '11px', marginLeft: 'auto' } }, fmtDuration(r.elapsedMs))),
           h('div', { style: { fontSize: '12px', fontWeight: 600, marginTop: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, titleOf(r)),
@@ -568,12 +592,15 @@ window.__ModuleLoader__.load({
 
       const renderDetail = () => {
         if (!current) return h('div', { style: styles.muted }, '左侧选一条记录')
-        const st = stOf(current)
+        const advise = isAdvise(current)
+        const st = advise ? REVIEW_STATUS.advise : stOf(current)
         const arches = distinctArches(current)
         const votes = Array.isArray(current.votes) ? current.votes : []
         const okCount = votes.filter(v => v.score !== null && v.score !== undefined).length
         const failedCount = votes.length - okCount
-        const verdict = votes.length === 0
+        const verdict = advise
+          ? adviseBody(current) || '这条会诊记录没有正文。'
+          : votes.length === 0
           ? '这条记录没有 peer 评分。'
           : failedCount === 0
             ? `结论基于 ${okCount}/${votes.length} 个 peer。`
@@ -581,9 +608,10 @@ window.__ModuleLoader__.load({
         return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '14px' } },
           h('div', null,
             h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', flexWrap: 'wrap' } },
-              h('span', { style: tag(st.color) }, labelOf(current.status)),
+              h('span', { style: tag(st.color) }, advise ? labelOf('advise') : labelOf(current.status)),
               h('span', { style: { fontSize: '13px', fontWeight: 600 } }, titleOf(current)),
-              h('span', { style: { fontSize: '12px', fontFamily: 'var(--dsw-font-mono, monospace)', color: st.color } },
+              // No score line for a consultation: fabricating one is exactly what the retired scorecard did.
+              advise ? null : h('span', { style: { fontSize: '12px', fontFamily: 'var(--dsw-font-mono, monospace)', color: st.color } },
                 current.final_score === null || current.final_score === undefined ? '—' : Number(current.final_score).toFixed(2))),
             h('div', { style: { ...styles.muted, fontSize: '11px', marginTop: '6px', display: 'flex', gap: '12px', flexWrap: 'wrap' } },
               h('span', null, '时间 ' + fmtTime(current.at)),
