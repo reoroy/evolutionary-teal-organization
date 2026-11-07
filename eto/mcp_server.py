@@ -134,7 +134,10 @@ def agent_execute(task: str, system: str = "", skills: list[str] | None = None, 
     # A provider failure now travels as a marked string, not as "". Checking `not output` alone
     # would let the marker through as a normal `status: ok` output — the workflow would then record
     # a step whose entire "answer" is an error blob.
-    from eto.stitches.consensus.vote import _parse_provider_error
+    from eto.stitches.consensus.vote import _FALLBACK_MARK, _parse_provider_error
+    # `dsh` peer 在无宿主端点时回落本机模型：剥掉标记，别让内部前缀漏进工作流输出。
+    if isinstance(output, str) and output.startswith(_FALLBACK_MARK):
+        output = output[len(_FALLBACK_MARK):]
     failure = _parse_provider_error(output)
     if failure is not None:
         return json.dumps({"status": "failed", "agent": agent, "output": "",
