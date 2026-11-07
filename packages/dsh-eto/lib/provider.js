@@ -292,7 +292,17 @@ export class EtoAdapter extends LlmAdapter {
     // is how the delegate ends up without tools: the model then has no tool schema to fill, so it
     // emits its native tool-call markup as plain text and nothing ever executes. `tools` is not
     // optional to pass along — it is the whole reason this path can act at all.
-    const { provider: _provider, model: _model, ...rest } = options
-    yield* llm.stream({ ...rest, provider: route.provider, model: route.model })
+    // A delegated turn belongs to the delegate model, so ETO's own output budget must not
+    // travel with it: 2048 tokens is the fused-summary size, and clamping a real answer to it
+    // ends the turn with `max-tokens` before the reply is finished.
+    const { provider: _provider, model: _model, maxTokens: _maxTokens, ...rest } = options
+    let budget = route.maxTokens
+    if (budget === undefined) {
+      try {
+        const target = await llm.resolveModel?.(route.provider, route.model)
+        if (typeof target?.defaultMaxTokens === 'number') budget = target.defaultMaxTokens
+      } catch { /* omit the budget and let the target decide */ }
+    }
+    yield* llm.stream({ ...rest, provider: route.provider, model: route.model, ...(budget === undefined ? {} : { maxTokens: budget }) })
   }
 }
