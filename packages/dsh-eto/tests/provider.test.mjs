@@ -215,3 +215,15 @@ test('the adapter advertises an honest context window and output budget', async 
   assert.ok(resolved.context.contextWindow <= 32_768, `contextWindow ${resolved.context.contextWindow} must not exceed the smallest peer`)
   assert.ok(resolved.defaultMaxTokens <= 2_048, `defaultMaxTokens ${resolved.defaultMaxTokens} must stay a short conclusion budget`)
 })
+
+test('renderConsensus leads with the answer and omits the full JSON by default', () => {
+  const text = renderConsensus(CONSENSUS)
+  // The synthesis is the first line, before any scorecard.
+  assert.ok(text.indexOf('先补回滚方案再合并') < text.indexOf('结论：'))
+  assert.ok(text.indexOf('先补回滚方案再合并') < text.indexOf('分歧与依据'))
+  assert.ok(!text.includes('完整结果'), 'no full JSON unless requested')
+
+  const full = renderConsensus(CONSENSUS, { full: true })
+  assert.ok(full.includes('完整结果'))
+  assert.ok(full.includes('"audit_id"'))
+})

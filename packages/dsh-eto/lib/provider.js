@@ -70,7 +70,7 @@ function wantsFullResult(plan, settings) {
   return String(plan ?? '').includes('完整结果') || settings?.includeFullResult === true
 }
 
-/** Render the consensus value into the streamed reply text. */
+/** Render the consensus value into the streamed reply text (answer-first). */
 export function renderConsensus(value, { full = false } = {}) {
   const record = value ?? {}
   const votes = Array.isArray(record.votes) ? record.votes : []
@@ -80,19 +80,16 @@ export function renderConsensus(value, { full = false } = {}) {
     ? record.fusion.distinct_providers
     : null
 
-  const lines = ['ETO 三源异构共识评审', '']
-  const status = String(record.status ?? 'degraded')
-  const scoreText = score === null ? '无有效评分' : score.toFixed(2)
-  const baseText = `${usable.length}/${votes.length} 个 peer`
-  lines.push(`结论：${status} · score ${scoreText} · 基于 ${baseText}${distinct !== null ? ` · ${distinct} 个不同架构` : ''}`)
-  if (record.degraded === true && Array.isArray(record.degraded_peers) && record.degraded_peers.length > 0) {
-    lines.push(`降级：${record.degraded_peers.join('、')} 未给出有效评分`)
-  }
-  if (typeof record.synthesis === 'string' && record.synthesis.trim() !== '') {
-    lines.push('', '融合结论：', record.synthesis.trim())
+  // Answer first (C): the usable conclusion leads; the scorecard goes last.
+  const lines = []
+  const synthesis = typeof record.synthesis === 'string' && record.synthesis.trim() !== '' ? record.synthesis.trim() : ''
+  lines.push(synthesis !== '' ? synthesis : String(record.status ?? 'degraded'))
+  if (Array.isArray(record.actions) && record.actions.length > 0) {
+    lines.push('', '行动项：')
+    for (const action of record.actions) lines.push(`- ${String(action)}`)
   }
   if (votes.length > 0) {
-    lines.push('', '各 peer 意见：')
+    lines.push('', '分歧与依据：')
     for (const vote of votes) {
       const peer = String(vote?.peer ?? '?')
       const label = sourceLabel({ provider: vote?.provider, model: vote?.model })
@@ -101,9 +98,12 @@ export function renderConsensus(value, { full = false } = {}) {
       lines.push(`- ${peer} [${label}] ${s}${concern}`)
     }
   }
-  if (Array.isArray(record.actions) && record.actions.length > 0) {
-    lines.push('', '行动项：')
-    for (const action of record.actions) lines.push(`- ${String(action)}`)
+  const status = String(record.status ?? 'degraded')
+  const scoreText = score === null ? '无有效评分' : score.toFixed(2)
+  const baseText = `${usable.length}/${votes.length} 个 peer`
+  lines.push('', `结论：${status} · score ${scoreText} · 基于 ${baseText}${distinct !== null ? ` · ${distinct} 个不同架构` : ''}`)
+  if (record.degraded === true && Array.isArray(record.degraded_peers) && record.degraded_peers.length > 0) {
+    lines.push(`降级：${record.degraded_peers.join('、')} 未给出有效评分`)
   }
   // Full JSON only on explicit request (B): it is the noisy tail, not the answer.
   if (full) {
