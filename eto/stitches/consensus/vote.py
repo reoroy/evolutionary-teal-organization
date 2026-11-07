@@ -28,10 +28,11 @@ PEER_SYSTEM_PROMPTS = {
 DEFAULT_PEER_CONFIG = {
     # 本机 Qwen（免费、无限、与云端不同源）
     "researcher": {"provider": "ollama", "model": MODEL},
-    # 云端 GLM（智谱 MoE 架构，便宜）
-    "coder": {"provider": "dsh", "model": "loomy/glm-5.3-flash"},
-    # 云端另一家（trae 通道），与上面不同供应商
-    "auditor": {"provider": "dsh", "model": "trae/glm-5.3-flash"},
+    # 云端 DeepSeek：与 Qwen / GLM 都不同架构；实测 /llm 端点会返回 text 块
+    "coder": {"provider": "dsh", "model": "deepseek-official/deepseek-flash"},
+    # 云端智谱 GLM MoE：第三个架构。loomy/raccoon 只吐 reasoning 无 text，不能用于投票；
+    # trae 当日额度耗尽（code=4008）。
+    "auditor": {"provider": "dsh", "model": "qodercn/gfmodel"},
     "终审仲裁者": {"provider": "ollama", "model": MODEL},
 }
 
@@ -83,6 +84,14 @@ def _call_dsh(model: str, system: str, prompt: str) -> str:
     失败返回 _provider_error 结构，绝不返回空串——那会让上层把「没连上」当成「答了低分」。
     """
     endpoint = os.environ.get("ETO_DSH_ENDPOINT", "").rstrip("/")
+    if not endpoint:
+        # 插件把当前宿主端点写在这里（端口每次启动都变）。文件优先于环境变量缺失：
+        # runner 是每次调用新起的子进程，所以改文件立刻生效，不必等 DSH 重启。
+        try:
+            with open(os.path.expanduser("~/.eto/dsh-endpoint"), encoding="utf-8") as f:
+                endpoint = f.read().strip().rstrip("/")
+        except OSError:
+            endpoint = ""
     if not endpoint:
         # 离线场景（CLI / 测试 / cron）没有宿主端点：回落本机模型，让评审仍然能出结果。
         # 这一回落**必须留痕**：返回值前缀标记，_score_single 会把 provider 记成
@@ -350,6 +359,15 @@ def _multi_strategy_tally(scores: list[float]) -> dict:
 
     return {"final": round(final, 3), "strategies": {"approval": round(approval, 3), "borda": round(borda, 3), "irv": round(irv, 3)}}
 
+def _source_of(vote: dict) -> str:
+    """真实来源标识：dsh 取 model 前缀，其余用 provider 名（回落与本体同源）。"""
+    provider = str(vote.get("provider", "")).replace("(fallback)", "")
+    model = str(vote.get("model", ""))
+    if provider == "dsh" and "/" in model:
+        return model.split("/", 1)[0]
+    return provider
+
+
 SYNTHESIS_PROMPT = (
     "下面是多个不同架构的模型对同一份计划的独立评审意见。请把它们**融合成一段**可执行的结论：\n"
     "- 只写各方都指向的、或至少两方提到的核心风险（不要罗列所有细节）\n"
@@ -431,7 +449,9 @@ def peer_review(plan: str, peers: list[str]) -> dict:
         # 融合层：各 peer 实际走的 provider/model，以及聚合器给出的统一结论。
         "fusion": {
             "sources": [{"peer": v["peer"], "provider": v.get("provider", "?"), "model": v.get("model", "?")} for v in votes],
-            "distinct_providers": len({v.get("provider") for v in votes if v.get("provider")}),
+            # 计数口径：`dsh` 只是传输层，真实来源在 model 前缀里（deepseek-official/…）；
+            # 回落不是另一个架构（ollama(fallback) 与 ollama 同源）。
+            "distinct_providers": len({_source_of(v) for v in votes if v.get("provider")}),
             "aggregator": f"ollama/{MODEL}",
         },
         "synthesis": _synthesize(plan, votes),
