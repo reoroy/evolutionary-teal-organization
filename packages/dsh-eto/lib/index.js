@@ -420,7 +420,7 @@ export function apply(ctx, entryConfig) {
             // Consensus makes several real LLM calls; 30 s would cut it off. 180 s matches the
             // tool-call budget the model-facing path already uses.
             const budget = tool === 'eto_consensus' ? 180_000 : 30_000
-            const result = await runTool({ settings, tool, args: (input.args && typeof input.args === 'object') ? input.args : {}, timeoutMs: budget })
+            const result = await runTool({ settings, tool, args: (input.args && typeof input.args === 'object') ? input.args : {}, timeoutMs: budget, env: dshEndpointApi.consensusEnv() })
             json(res, 200, {
               ok: result.ok,
               value: result.ok ? result.value : undefined,

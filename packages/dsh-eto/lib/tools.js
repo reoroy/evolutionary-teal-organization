@@ -107,13 +107,16 @@ export function createTools({ ctx, settings }) {
    */
   let dshEndpoint = null
   const setDshEndpoint = url => { if (url) dshEndpoint = url }
-  const api = { setDshEndpoint }
+  /** Env for a spawned ETO call that may reach back into the host's /llm endpoint. */
+  const consensusEnv = () => {
+    const base = childEnv(settings(), process.env)
+    return dshEndpoint ? { ...base, ETO_DSH_ENDPOINT: dshEndpoint } : base
+  }
+  const api = { setDshEndpoint, consensusEnv }
 
   /** Run one ETO tool through the child process and unwrap its value. */
   const call = async (tool, args, exec) => {
-    const base = childEnv(settings(), process.env)
-    const env = dshEndpoint ? { ...base, ETO_DSH_ENDPOINT: dshEndpoint } : base
-    const result = await runTool({ settings: settings(), tool, args, signal: exec.signal, env })
+    const result = await runTool({ settings: settings(), tool, args, signal: exec.signal, env: consensusEnv() })
     if (!result.ok) throw failureOf(tool, result)
     return result.value
   }
@@ -156,7 +159,7 @@ export function createTools({ ctx, settings }) {
       execute: async (args, exec) => {
         const plan = typeof args.plan === 'string' ? args.plan.trim() : ''
         const started = Date.now()
-        const result = await runTool({ settings: settings(), tool: 'eto_consensus', args, signal: exec.signal })
+        const result = await runTool({ settings: settings(), tool: 'eto_consensus', args, signal: exec.signal, env: consensusEnv() })
         if (!result.ok) throw failureOf('eto_consensus', result)
         const value = result.value
         const written = persistReview({
