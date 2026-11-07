@@ -220,17 +220,27 @@ const RECORDS = [
     trigger: '方案拍板前',
     plan: '改造方案 v2 提案（dsh-eto）\n\n目标：把 packages/dsh-eto 从「7 个工具 + 查询面板」改成「日常会用的免费独立评审」。\n一、定位收窄：只留 eto_consensus 与 eto_peer_score…\n二、触发点从「想用时」改成「决策前」…\n三、面板只做台账…\n四、三步实施…',
     peers: [
-      { name: 'researcher', score: 0.75, state: 'ok',
+      { name: 'researcher', score: 0.75, state: 'ok', provider: 'ollama', model: 'qwen3-8b-arb:latest',
         concern: '未明确量化效果评估指标和长期维护策略',
         suggestion: '建议增加使用率监控、质量反馈循环及模型迭代计划' },
-      { name: 'coder', score: 0.65, state: 'ok',
+      { name: 'coder', score: 0.65, state: 'ok', provider: 'dsh', model: 'loomy/glm-5.3-flash',
         concern: '技术方案在实现路径上较为合理，但存在一定的技术债务风险，特别是在模型质量保障和长期维护方面。',
         suggestion: '建议考虑使用更高效的本地模型或引入缓存机制，并增加对评审结果的验证流程以提高可靠性。' },
-      { name: 'auditor', score: null, state: 'failed',
+      { name: 'auditor', score: null, state: 'failed', provider: 'dsh', model: 'trae/glm-5.3-flash',
         concern: '回复里先有一个完整的评分 JSON，后面又跟了 </think> 和第二段半截 JSON。_extract_json 取「第一个 { 到最后一个 }」，把两段拼成一个非法 JSON 后解析失败 —— 它的真实疑虑（「未考虑云端和本地模型的切换风险及数据一致性」）就在第一段里，被整段丢掉。',
         suggestion: '',
         raw: '（出错信息里保留的前 120 字）{"score":0.65,"concern":"未考虑云端模型和本地模型的切换风险及数据一致性问题","suggestion":"…"}\n</think>\n\n{ "s' }
     ],
+    fusion: {
+      sources: [
+        { peer: 'researcher', provider: 'ollama', model: 'qwen3-8b-arb:latest' },
+        { peer: 'coder', provider: 'dsh', model: 'loomy/glm-5.3-flash' },
+        { peer: 'auditor', provider: 'dsh', model: 'trae/glm-5.3-flash' }
+      ],
+      distinct_providers: 2,
+      aggregator: 'ollama/qwen3-8b-arb:latest'
+    },
+    synthesis: '两方都指向「缺少量化指标」：researcher 要使用率监控与迭代计划，coder 要验证流程提高可靠性。没有直接冲突。最该先做：先定一个可观测的成功指标，再谈长期维护。',
     actions: ['1/3 个 peer 无有效评分（auditor），结论仅基于其余 2 个'],
     source: 'packages/dsh-eto/lib/eto_runner.py eto_consensus 实跑（2026-11-06 19:18，56.9s）'
   },
@@ -245,14 +255,14 @@ const RECORDS = [
     trigger: '改动入库前',
     plan: '把 20 处 except: pass 一次性改成 except: return None，直接合并到 main，不跑测试',
     peers: [
-      { name: 'researcher', score: 0.5, state: 'ok',
+      { name: 'researcher', score: 0.5, state: 'ok', provider: 'ollama', model: 'qwen3-8b-arb:latest',
         concern: '缺乏对代码结构和潜在错误的考虑',
         suggestion: '应进行单元测试验证修改后的代码行为，并评估代码可维护性' },
-      { name: 'coder', score: null, state: 'failed',
+      { name: 'coder', score: null, state: 'failed', provider: 'ollama', model: 'qwen3-8b-arb:latest',
         concern: '[coder] provider ollama/qwen3-8b-arb:latest 无响应: TimeoutError: timed out',
         why: 'vote.py:87 的 urlopen(timeout=30) 是单次调用预算，8B 模型常超过它',
         suggestion: '' },
-      { name: 'auditor', score: null, state: 'failed',
+      { name: 'auditor', score: null, state: 'failed', provider: 'ollama', model: 'qwen3-8b-arb:latest',
         concern: '[auditor] provider ollama/qwen3-8b-arb:latest 无响应: TimeoutError: timed out',
         why: 'peer 串行（vote.py:289），前一个慢，后一个预算也被吃掉',
         suggestion: '' }
@@ -395,6 +405,38 @@ const STATUS = {
 
 const fmtDuration = ms => ms === null ? '—' : (ms / 1000).toFixed(1) + 's'
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+
+/** 把 provider/model 映射成一眼能认的架构家族名（Qwen / GLM / DeepSeek…）。未知返回空串。 */
+const archLabel = (provider, model) => {
+  const m = String(model || '').toLowerCase()
+  const p = String(provider || '').toLowerCase()
+  if (m.includes('qwen')) return 'Qwen'
+  if (m.includes('glm')) return 'GLM'
+  if (m.includes('deepseek')) return 'DeepSeek'
+  if (m.includes('gpt')) return 'GPT'
+  if (m.includes('claude')) return 'Claude'
+  if (p.includes('ollama')) return 'Ollama'
+  if (p.includes('dsh')) return 'DSH'
+  return ''
+}
+/** 这轮实际用到的不同架构，按 peer 顺序去重。优先读 fusion.sources。 */
+const distinctArches = rec => {
+  const sources = rec.fusion && Array.isArray(rec.fusion.sources) && rec.fusion.sources.length
+    ? rec.fusion.sources
+    : (rec.peers || []).map(p => ({ provider: p.provider, model: p.model }))
+  const labels = []
+  for (const s of sources) {
+    const label = archLabel(s.provider, s.model)
+    if (label && !labels.includes(label)) labels.push(label)
+  }
+  return labels
+}
+const archTextOf = rec => {
+  const arches = distinctArches(rec)
+  if (arches.length) return `${arches.length} 架构（${arches.join('·')}）`
+  const n = (rec.peers || []).length
+  return n > 0 ? `${n} peer` : ''
+}
 const satisfies = rec => state.filter === 'all' ? true
   : state.filter === 'degraded' ? (rec.peers.some(p => p.state === 'failed') || rec.status === 'degraded')
   : rec.status === state.filter
@@ -420,6 +462,7 @@ function renderRecords () {
   ul.innerHTML = rows.map(rec => {
     const st = STATUS[rec.status]
     const failed = rec.peers.filter(p => p.state === 'failed').length
+    const archText = archTextOf(rec)
     return `<li class="rec" data-id="${rec.id}" aria-selected="${rec.id === state.selected}" tabindex="0">
       <span class="dot" style="background:${st.color}"></span>
       <span>
@@ -427,8 +470,8 @@ function renderRecords () {
         <span class="meta">
           <span class="tag ${st.tag}">${st.label}</span>
           <span class="sep">·</span><span>${rec.at}</span>
+          ${archText ? `<span class="sep">·</span><span>${archText}</span>` : ''}
           ${failed ? `<span class="sep">·</span><span style="color:var(--red)">${failed} peer 掉队</span>` : ''}
-          ${rec.useful ? '' : ''}
         </span>
       </span>
       <span class="score">${rec.score === null ? '—' : rec.score.toFixed(2)}</span>
@@ -447,6 +490,7 @@ function peerCard (peer) {
       <span class="sc ${peer.score === null ? 'na' : ''}" style="color:${color}">${peer.score === null ? '无有效分' : peer.score.toFixed(2)}</span>
     </div>
     <div class="bar"><i style="width:${pct}%;background:${color}"></i></div>
+    ${peer.provider ? `<div class="field"><span class="k">来源</span><span class="v">${esc(peer.provider + (peer.model ? '/' + peer.model : ''))}</span></div>` : ''}
     <div class="field"><span class="k">疑虑</span><span class="v ${failed ? 'err' : ''}">${esc(peer.concern)}</span></div>
     ${peer.why ? `<div class="field"><span class="k">为什么</span><span class="v">${esc(peer.why)}</span></div>` : ''}
     ${peer.suggestion ? `<div class="field"><span class="k">建议</span><span class="v">${esc(peer.suggestion)}</span></div>` : ''}
@@ -497,6 +541,11 @@ function renderDetail () {
         </div>
       </section>
 
+      ${rec.synthesis ? `<section class="card">
+        <div class="hd">融合结论<span class="right"><span class="tag ok">${archTextOf(rec)}</span></span></div>
+        <div class="bd"><p style="margin:0;font-size:13px;color:var(--text);white-space:pre-wrap">${esc(rec.synthesis)}</p></div>
+      </section>` : ''}
+
       ${rec.peers.length ? `<section class="peers">${rec.peers.map(peerCard).join('')}</section>` : ''}
 
       ${rec.route ? `<section class="card">
@@ -541,8 +590,8 @@ function renderDetail () {
         <div class="hd">原始结果</div>
         <div class="bd"><details><summary>展开 JSON</summary><pre class="json">${esc(JSON.stringify({
           status: rec.status, final_score: rec.score,
-          votes: rec.peers.map(p => ({ peer: p.name, score: p.score, concern: p.concern, suggestion: p.suggestion })),
-          actions: rec.actions, model: rec.model
+          votes: rec.peers.map(p => ({ peer: p.name, score: p.score, provider: p.provider, model: p.model, concern: p.concern, suggestion: p.suggestion })),
+          fusion: rec.fusion, synthesis: rec.synthesis, actions: rec.actions, model: rec.model
         }, null, 2))}</pre></details></div>
       </section>
     </div>`

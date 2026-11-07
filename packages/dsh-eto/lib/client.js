@@ -417,178 +417,198 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const HISTORY_KEY = 'dsh-eto:history'
-    const HISTORY_MAX = 50
-
-    function readHistory() {
-      try {
-        const raw = window.localStorage.getItem(HISTORY_KEY)
-        const parsed = raw ? JSON.parse(raw) : []
-        return Array.isArray(parsed) ? parsed : []
-      } catch { return [] }
-    }
-    function writeHistory(list) {
-      try { window.localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, HISTORY_MAX))) } catch { /* quota / private mode */ }
+    /** Status → tag label + colour, shared by the list rows and the detail header. */
+    const REVIEW_STATUS = {
+      approved: { zh: '通过', en: 'Approved', color: 'var(--dsw-alias-label-positive, #2ecc71)' },
+      revise: { zh: '需修改', en: 'Revise', color: 'var(--dsw-alias-label-warn, #d29922)' },
+      degraded: { zh: '降级', en: 'Degraded', color: 'var(--dsw-alias-label-critical, #e74c3c)' },
+      partial: { zh: '只留路由', en: 'Partial', color: 'var(--dsw-alias-label-warn, #d29922)' },
     }
 
-    const ACTION_LABEL = {
-      route: { zh: '路由', en: 'Route' },
-      clarify: { zh: '澄清', en: 'Clarify' },
-      consensus: { zh: '评审', en: 'Review' },
-      flow: { zh: '完整流程', en: 'Full flow' },
+    /** A short architecture family for a provider/model pair (for `fusion.sources`). */
+    const archLabel = (provider, model) => {
+      const m = String(model || '').toLowerCase()
+      const p = String(provider || '').toLowerCase()
+      if (m.includes('qwen')) return 'Qwen'
+      if (m.includes('glm')) return 'GLM'
+      if (m.includes('deepseek')) return 'DeepSeek'
+      if (m.includes('gpt')) return 'GPT'
+      if (m.includes('claude')) return 'Claude'
+      if (p.includes('ollama')) return 'Ollama'
+      if (p.includes('dsh')) return 'DSH'
+      return ''
     }
 
-    function TimelineEntry({ entry, label, onRerun, onCopy, copied }) {
-      const [open, setOpen] = React.useState(false)
-      const color = entry.ok ? 'var(--dsw-alias-label-positive, #2ecc71)' : 'var(--dsw-alias-label-critical, #e74c3c)'
-      const when = new Date(entry.at)
-      const hhmm = String(when.getHours()).padStart(2, '0') + ':' + String(when.getMinutes()).padStart(2, '0')
-      return h('div', { style: { borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 2px', cursor: 'pointer' },
-          onClick: () => setOpen(!open) },
-          h('span', { style: { color, fontWeight: 700, width: '14px' } }, entry.ok ? '✓' : '✗'),
-          h('span', { style: { fontSize: '12px', fontWeight: 600, minWidth: '64px' } }, label),
-          h('span', { style: { ...styles.muted, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-            String(entry.input || '').slice(0, 80)),
-          h('span', { style: { ...styles.muted, minWidth: '56px', textAlign: 'right' } }, (entry.latencyMs || 0) + 'ms'),
-          h('span', { style: { ...styles.muted, minWidth: '40px', textAlign: 'right' } }, hhmm)),
-        open ? h('div', { style: { padding: '2px 2px 12px 24px' } },
-          entry.error ? h('div', { style: { color, fontSize: '12px', marginBottom: '6px' } }, entry.error) : null,
-          h('pre', { style: { whiteSpace: 'pre-wrap', margin: 0, fontSize: '11px', maxHeight: '220px', overflow: 'auto',
-            background: 'var(--dsw-alias-bg-layer-1)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '8px' } },
-            JSON.stringify(entry.value ?? {}, null, 1).slice(0, 4000)),
-          h('div', { style: { display: 'flex', gap: '6px', marginTop: '8px' } },
-            h('button', { style: styles.button, onClick: () => onRerun(entry) }, '↻ 重跑'),
-            h('button', { style: styles.button, onClick: () => onCopy(entry) },
-              copied === entry.at ? '已复制 ✓' : '复制 JSON'),
-            h('span', { style: { ...styles.muted, fontSize: '11px', marginLeft: '6px' } },
-              '（面板无法新建会话，粘到对话里即可）'))) : null)
+    /** The per-peer provider/model list: `fusion.sources` when present, else votes. */
+    const sourcesOf = record => {
+      if (record && record.fusion && Array.isArray(record.fusion.sources) && record.fusion.sources.length > 0) {
+        return record.fusion.sources
+      }
+      return (record && record.votes ? record.votes : []).map(v => ({ peer: v.peer, provider: v.provider, model: v.model }))
+    }
+
+    /** Distinct architecture families this review actually used, in peer order. */
+    const distinctArches = record => {
+      const labels = []
+      for (const source of sourcesOf(record)) {
+        const label = archLabel(source.provider, source.model)
+        if (label !== '' && !labels.includes(label)) labels.push(label)
+      }
+      return labels
+    }
+
+    const fmtDuration = ms => (typeof ms === 'number' && Number.isFinite(ms) ? (ms / 1000).toFixed(1) + 's' : '—')
+
+    const fmtTime = at => {
+      const when = new Date(at)
+      if (Number.isNaN(when.getTime())) return '—'
+      const pad = n => String(n).padStart(2, '0')
+      return `${pad(when.getMonth() + 1)}-${pad(when.getDate())} ${pad(when.getHours())}:${pad(when.getMinutes())}`
     }
 
     function InfoPage(props) {
       const ctx = props.__ctx
       const lang = useLang(ctx)
       const { data, busy, reload } = useStatus()
-      const [task, setTask] = React.useState('')
-      const [running, setRunning] = React.useState('')
-      const [history, setHistory] = React.useState(() => readHistory())
+      const [reviews, setReviews] = React.useState(null)
+      const [error, setError] = React.useState(null)
+      const [selected, setSelected] = React.useState(null)
       const [copied, setCopied] = React.useState(0)
-      const reviewJobRef = React.useRef(null)
-      const [notice, setNotice] = React.useState('')
       const eto = (data && data.eto) || {}
       const ok = Boolean(data && data.ok)
-      const labelOf = key => (ACTION_LABEL[key] || { zh: key, en: key })[lang === 'zh' ? 'zh' : 'en']
+      const labelOf = key => (REVIEW_STATUS[key] || { zh: key, en: key })[lang === 'zh' ? 'zh' : 'en']
 
-      const push = entry => {
-        setHistory(prev => {
-          const next = [entry, ...prev].slice(0, HISTORY_MAX)
-          writeHistory(next)
-          return next
-        })
-      }
-
-      const call = async (tool, args) => {
-        const started = Date.now()
-        const res = await fetch(API + '/run', {
-          method: 'POST', headers: { ...HEADERS, 'content-type': 'application/json' },
-          body: JSON.stringify({ tool, args }),
-        })
-        const out = await res.json().catch(() => ({ ok: false, error: 'HTTP ' + res.status }))
-        return { ok: out.ok === true, value: out.value, error: out.ok ? null : out.error, latencyMs: out.latencyMs ?? (Date.now() - started) }
-      }
-
-      const runAction = async action => {
-        const input = task.trim()
-        if (!input) { setNotice('先写点东西'); return }
-        setNotice('')
-        setRunning(action)
-        const started = Date.now()
+      const load = React.useCallback(async () => {
         try {
-          if (action === 'route') {
-            push({ action, input, at: started, ...(await call('eto_route', { task: input })) })
-          } else if (action === 'clarify') {
-            push({ action, input, at: started, ...(await call('eto_clarify', { task: input })) })
-          } else if (action === 'consensus') {
-            // Async + poll. The panel shows only facts: elapsed time and how many peers answered.
-            // No fabricated "stage 2/3" — ETO does not report per-stage progress.
-            const startRes = await fetch(API + '/review', {
-              method: 'POST', headers: { ...HEADERS, 'content-type': 'application/json' },
-              body: JSON.stringify({ plan: input }),
-            })
-            const started2 = await startRes.json().catch(() => ({ _error: true, error: 'HTTP ' + startRes.status }))
-            if (started2._error) {
-              push({ action, input, at: started, ok: false, error: started2.error, latencyMs: Date.now() - started })
-            } else {
-              const jobId = started2.id
-              reviewJobRef.current = jobId
-              let final = null
-              for (;;) {
-                if (reviewJobRef.current !== jobId) { setNotice('已取消'); break }   // user cancelled
-                await new Promise(r => setTimeout(r, 1000))
-                const poll = await fetch(API + '/review/' + jobId, { headers: HEADERS }).then(r => r.json()).catch(() => null)
-                if (!poll) continue
-                const okCount = poll.peers.filter(p => p.state === 'ok').length
-                const doneCount = poll.peers.filter(p => p.state !== 'pending').length
-                setNotice('评审中 ' + Math.round(poll.elapsedMs / 1000) + 's · ' + doneCount + '/' + poll.peers.length +
-                  ' 已返回（成功 ' + okCount + '）')
-                if (poll.done) { final = poll; break }
-              }
-              if (final) {
-                const anyOk = final.peers.some(p => p.state === 'ok')
-                push({ action, input, at: started, ok: anyOk, latencyMs: final.elapsedMs,
-                  error: anyOk ? null : (final.peers.find(p => p.error)?.error || '所有 peer 均失败'),
-                  value: { peers: final.peers.map(p => ({ peer: p.peer, state: p.state, text: p.text, error: p.error })) } })
-              }
-              reviewJobRef.current = null
-              setNotice('')
-            }
-          } else if (action === 'flow') {
-            setNotice('完整流程：路由 → 评审 → 记忆…')
-            const route = await call('eto_route', { task: input })
-            push({ action: 'route', input, at: started, ...route })
-            const peers = ['researcher', 'coder', 'auditor']
-            const results = await Promise.all(peers.map(async peer => {
-              const r = await fetch(API + '/peer-score', {
-                method: 'POST', headers: { ...HEADERS, 'content-type': 'application/json' },
-                body: JSON.stringify({ peer, plan: input }),
-              })
-              return { peer, out: await r.json().catch(() => ({ _error: true, error: 'HTTP ' + r.status })) }
-            }))
-            const review = { ok: results.some(r => !r.out._error), value: { peers: results.map(r => ({ peer: r.peer, ok: !r.out._error, text: r.out._text || null, error: r.out.error || null })) }, error: results.every(r => r.out._error) ? (results[0].out.error || 'all peers failed') : null, latencyMs: 0 }
-            push({ action: 'consensus', input, at: Date.now(), ...review })
-            await call('eto_memory_write', {
-              key: 'flow:last',
-              value_json: JSON.stringify({ task: input, route: route.value, review: review.value, at: started }),
-            })
-            setNotice('完整流程完成，结果存到 flow:last')
-          }
-        } catch (e) {
-          push({ action, input, at: started, ok: false, error: String(e), latencyMs: Date.now() - started })
-        } finally { setRunning(''); reload() }
-      }
+          const res = await fetch(API + '/reviews', { headers: HEADERS, cache: 'no-store' })
+          const value = await res.json().catch(() => null)
+          if (!res.ok) throw new Error((value && value.error) || 'HTTP ' + res.status)
+          const list = Array.isArray(value.reviews) ? value.reviews : []
+          setReviews(list)
+          setError(null)
+          setSelected(prev => (prev !== null && list.some(r => r.id === prev)) ? prev : ((list[0] && list[0].id) || null))
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : String(reason))
+        }
+      }, [])
 
-      const rerun = entry => { setTask(entry.input || ''); runAction(entry.action) }
+      React.useEffect(() => {
+        load()
+        const timer = setInterval(load, 30_000)
+        return () => clearInterval(timer)
+      }, [load])
 
-      const copyEntry = async entry => {
-        const body = entry.ok
-          ? 'ETO 的「' + labelOf(entry.action) + '」结果：\n\n输入：' + entry.input +
-            '\n\n结果：\n```json\n' + JSON.stringify(entry.value, null, 2).slice(0, 3000) + '\n```'
-          : 'ETO 的「' + labelOf(entry.action) + '」失败了：\n\n输入：' + entry.input + '\n\n错误：' + entry.error
+      const current = (reviews || []).find(r => r.id === selected) || null
+
+      const copyJson = async () => {
+        if (!current) return
         try {
-          await navigator.clipboard.writeText(body)
-          setCopied(entry.at)
+          await navigator.clipboard.writeText(JSON.stringify(current, null, 2))
+          setCopied(current.id)
           setTimeout(() => setCopied(0), 1500)
         } catch (e) {
-          setNotice('复制失败（浏览器拒绝）：' + (e && e.message ? e.message : String(e)))
+          setError('复制失败（浏览器拒绝）：' + (e && e.message ? e.message : String(e)))
         }
       }
 
       const pill = { fontSize: '11px', padding: '3px 9px', borderRadius: '999px', border: '1px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)' }
-      const actionBtn = (key, primary) => h('button', {
-        key, disabled: running !== '',
-        style: { ...styles.button, ...(primary ? { fontWeight: 600 } : {}) },
-        onClick: () => runAction(key),
-      }, running === key ? '…' : labelOf(key))
+      const tag = (color) => ({ fontSize: '11px', padding: '1px 8px', borderRadius: '999px', border: '1px solid ' + color, color })
+
+      const stOf = r => REVIEW_STATUS[r.status] || REVIEW_STATUS.approved
+      const titleOf = r => (r.plan ? String(r.plan).split('\n')[0].trim() : '') || '(无标题)'
+      const scoreColor = score => (score >= 0.7 ? 'var(--dsw-alias-label-positive, #2ecc71)' : score >= 0.5 ? 'var(--dsw-alias-label-warn, #d29922)' : 'var(--dsw-alias-label-critical, #e74c3c)')
+
+      const renderRow = r => {
+        const st = stOf(r)
+        const arches = distinctArches(r)
+        const votes = Array.isArray(r.votes) ? r.votes : []
+        const okCount = votes.filter(v => v.score !== null && v.score !== undefined).length
+        const failedCount = votes.length - okCount
+        const degraded = r.degraded === true || failedCount > 0
+        const archText = arches.length > 0
+          ? `${arches.length} 架构（${arches.join('·')}）`
+          : `${votes.length} peers`
+        return h('div', {
+          key: r.id, onClick: () => setSelected(r.id),
+          style: {
+            padding: '9px 12px', cursor: 'pointer', borderBottom: '1px solid var(--dsw-alias-border-l1)',
+            background: r.id === selected ? 'var(--dsw-alias-bg-layer-1)' : 'transparent',
+            borderLeft: r.id === selected ? '2px solid var(--dsw-alias-brand-primary)' : '2px solid transparent',
+          },
+        },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '7px' } },
+            h('span', { style: tag(st.color) }, labelOf(r.status)),
+            h('span', { style: { ...styles.muted, fontSize: '11px' } }, fmtTime(r.at)),
+            h('span', { style: { ...styles.muted, fontSize: '11px', marginLeft: 'auto' } }, fmtDuration(r.elapsedMs))),
+          h('div', { style: { fontSize: '12px', fontWeight: 600, marginTop: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, titleOf(r)),
+          h('div', { style: { ...styles.muted, fontSize: '11px', marginTop: '3px' } },
+            h('span', null, archText),
+            degraded ? h('span', { style: { color: 'var(--dsw-alias-state-error-primary)', marginLeft: '7px' } }, `${failedCount} peer 掉队`) : null))
+      }
+
+      const peerCard = v => {
+        const failed = v.score === null || v.score === undefined
+        const providerModel = [v.provider, v.model].filter(Boolean).join('/')
+        return h('div', { key: v.peer, style: { ...styles.card, padding: '12px' } },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '7px', flexWrap: 'wrap' } },
+            h('span', { style: { fontWeight: 600, fontSize: '12.5px' } }, v.peer),
+            providerModel ? h('span', { style: { ...styles.muted, fontSize: '11px' } }, providerModel) : null,
+            h('span', { style: { marginLeft: 'auto', fontSize: '13px', fontWeight: 600, fontFamily: 'var(--dsw-font-mono, monospace)', color: failed ? 'var(--dsw-alias-state-error-primary)' : scoreColor(Number(v.score)) } },
+              failed ? '无有效分' : Number(v.score).toFixed(2))),
+          v.concern ? h('div', { style: { ...(failed ? styles.error : styles.muted), fontSize: '12px', marginTop: '6px', whiteSpace: 'pre-wrap' } },
+            (failed ? '掉队原因：' : '疑虑：') + v.concern) : null,
+          v.suggestion ? h('div', { style: { ...styles.muted, fontSize: '12px', marginTop: '4px', whiteSpace: 'pre-wrap' } }, '建议：' + v.suggestion) : null)
+      }
+
+      const renderDetail = () => {
+        if (!current) return h('div', { style: styles.muted }, '左侧选一条记录')
+        const st = stOf(current)
+        const arches = distinctArches(current)
+        const votes = Array.isArray(current.votes) ? current.votes : []
+        const okCount = votes.filter(v => v.score !== null && v.score !== undefined).length
+        const failedCount = votes.length - okCount
+        const verdict = votes.length === 0
+          ? '这条记录没有 peer 评分。'
+          : failedCount === 0
+            ? `结论基于 ${okCount}/${votes.length} 个 peer。`
+            : `结论只基于 ${okCount}/${votes.length} 个 peer —— 另外 ${failedCount} 个没给出有效评分，原因写在下面。`
+        return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '14px' } },
+          h('div', null,
+            h('div', { style: { display: 'flex', alignItems: 'center', gap: '9px', flexWrap: 'wrap' } },
+              h('span', { style: tag(st.color) }, labelOf(current.status)),
+              h('span', { style: { fontSize: '13px', fontWeight: 600 } }, titleOf(current)),
+              h('span', { style: { fontSize: '12px', fontFamily: 'var(--dsw-font-mono, monospace)', color: st.color } },
+                current.final_score === null || current.final_score === undefined ? '—' : Number(current.final_score).toFixed(2))),
+            h('div', { style: { ...styles.muted, fontSize: '11px', marginTop: '6px', display: 'flex', gap: '12px', flexWrap: 'wrap' } },
+              h('span', null, '时间 ' + fmtTime(current.at)),
+              h('span', null, '耗时 ' + fmtDuration(current.elapsedMs)),
+              h('span', null, '架构 ' + (arches.length ? arches.join('·') : '—')))),
+          h('div', { style: styles.card },
+            h('div', { style: styles.cardTitle }, '结论'),
+            h('div', { style: { fontSize: '13px' } }, verdict),
+            Array.isArray(current.actions) && current.actions.length
+              ? h('ul', { style: { margin: '8px 0 0', paddingLeft: '18px', fontSize: '12.5px', color: 'var(--dsw-alias-label-secondary)' } },
+                current.actions.map(a => h('li', { key: a }, a)))
+              : null),
+          current.synthesis
+            ? h('div', { style: styles.card },
+              h('div', { style: styles.cardTitle }, '融合结论'),
+              h('div', { style: { fontSize: '12.5px', whiteSpace: 'pre-wrap', color: 'var(--dsw-alias-label-primary)' } }, current.synthesis))
+            : null,
+          votes.length
+            ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '10px' } },
+              votes.map(peerCard))
+            : null,
+          h('div', { style: styles.card },
+            h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px' } },
+              h('div', { style: { ...styles.cardTitle, marginBottom: 0 } }, '被评的东西'),
+              h('span', { style: { flex: 1 } }),
+              h('button', { style: styles.button, onClick: copyJson }, copied === current.id ? '已复制 ✓' : '复制 JSON')),
+            h('div', { style: { marginTop: '10px' } },
+              current.plan
+                ? h('pre', { style: { whiteSpace: 'pre-wrap', margin: 0, fontSize: '12px', background: 'var(--dsw-alias-bg-base)', border: '1px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '10px' } }, current.plan)
+                : h('div', { style: styles.muted }, '输入没有留存。'))))
+      }
 
       return h('div', { style: { ...styles.page, padding: 0 } },
         h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 16px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
@@ -597,39 +617,18 @@ window.__ModuleLoader__.load({
           h('span', { style: pill }, (eto.version || '?') + ' · ' + String(eto.commit || '?').slice(0, 7)),
           h('span', { style: { flex: 1 } }),
           h('button', { style: styles.button, onClick: () => reload({ fresh: true }), disabled: busy }, busy ? '…' : '↻')),
-        h('div', { style: { padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: '10px' } },
-          h('textarea', {
-            value: task, onChange: e => setTask(e.target.value),
-            placeholder: '你要做什么？写个任务或方案，然后选下面的动作…',
-            style: { ...styles.input, minHeight: '76px', resize: 'vertical', fontSize: '13px', lineHeight: 1.5 },
-          }),
-          h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
-            actionBtn('route'), actionBtn('clarify'), actionBtn('consensus'), actionBtn('flow', true)),
-          h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', minHeight: '20px' } },
-            notice ? h('span', { style: { ...styles.muted, fontSize: '12px' } }, notice) : null,
-            reviewJobRef.current ? h('button', {
-              style: { ...styles.button, fontSize: '11px' },
-              onClick: async () => {
-                const id = reviewJobRef.current
-                reviewJobRef.current = null
-                if (id) await fetch(API + '/review/' + id, { method: 'DELETE', headers: HEADERS }).catch(() => {})
-                setNotice('已取消')
-              },
-            }, '取消') : null)),
-        h('div', { style: { padding: '0 16px 8px', display: 'flex', alignItems: 'center', gap: '10px' } },
-          h('div', { style: styles.cardTitle }, '最近'),
-          h('span', { style: { flex: 1 } }),
-          history.length ? h('button', {
-            style: { ...styles.button, fontSize: '11px' },
-            onClick: () => { setHistory([]); writeHistory([]) },
-          }, '清空') : null),
-        h('div', { style: { ...styles.body, padding: '0 16px 16px', gap: 0 } },
-          history.length === 0
-            ? h('div', { style: styles.muted }, '还没有记录。上面写点什么，点个动作试试。')
-            : history.map(entry => h(TimelineEntry, {
-                key: entry.at, entry, label: labelOf(entry.action),
-                onRerun: rerun, onCopy: copyEntry, copied,
-              }))))
+        h('div', { style: { flex: 1, minHeight: 0, display: 'flex' } },
+          h('div', { style: { width: '300px', flex: '0 0 300px', borderRight: '1px solid var(--dsw-alias-border-l1)', overflowY: 'auto', display: 'flex', flexDirection: 'column' } },
+            h('div', { style: { padding: '10px 14px', borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
+              h('div', { style: styles.cardTitle }, '评审台账'),
+              error ? h('div', { style: { ...styles.error, marginTop: '6px' } }, error) : null),
+            reviews === null
+              ? h('div', { style: { ...styles.muted, padding: '16px' } }, '…')
+              : reviews.length === 0
+                ? h('div', { style: { ...styles.muted, padding: '16px' } }, '还没有评审记录。在对话里让 eto_consensus 评审一次方案后，记录会出现在这里。')
+                : reviews.map(renderRow)),
+          h('div', { style: { flex: 1, minWidth: 0, overflowY: 'auto', padding: '16px' } },
+            renderDetail())))
     }
 
     function SettingsPage(props) {
