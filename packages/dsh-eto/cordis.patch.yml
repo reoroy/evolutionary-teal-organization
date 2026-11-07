@@ -16,10 +16,10 @@
     - id: eto
       name: 'dsh-eto'
       config:
-        # `direct` 轮次委托给谁。默认值 deepseek-official/deepseek-flash 在当前账号额度耗尽时
-        # 每轮都返回 stream error，等于 ETO 完全不可用 —— 所以显式指向当前可用的免费通道。
-        # DeepSeek flash 恢复后把这里改回 'deepseek-official/deepseek-flash' 即可。
-        delegateModel: 'qodercn/dfmodel'
+        # `direct` / `plan` 轮次委托给谁，逗号分隔成回落链，前面的挂了自动用后面的。
+        # 单个模型时一旦它额度耗尽，ETO 就完全不可用（/status 还是绿的，最难查）。
+        # flash 恢复后把它放回链首即可。
+        delegateModel: 'deepseek-official/deepseek-flash,qodercn/dfmodel,qodercn/gfmodel'
         # Only the ETO flow the panels and the plan/repair path actually need.
         # Full list is TOOL_NAMES in lib/tools.js; empty `[]` means every tool.
         # Dropped from the default surface (re-enable by naming them here):

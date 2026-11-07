@@ -13,9 +13,12 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { resolveSettings } from '../lib/config.js'
 import { apply } from '../lib/index.js'
-import { ETO_MODEL, ETO_PROVIDER, EtoAdapter, parseDelegateRoute, renderConsensus, capPlan } from '../lib/provider.js'
+import { ETO_MODEL, ETO_PROVIDER, EtoAdapter, parseDelegateChain, parseDelegateRoute, renderConsensus, capPlan } from '../lib/provider.js'
 import { listReviews } from '../lib/reviews.js'
 import { childEnv } from '../lib/spawn.js'
+
+const DEFAULT_DELEGATE_PROVIDER = 'deepseek-official'
+const DEFAULT_DELEGATE_MODEL = 'deepseek-flash'
 
 const CONSENSUS = {
   status: 'approved',
@@ -334,4 +337,44 @@ test('a plan-routed turn executes instead of opening a peer review', async () =>
   assert.equal(seen.length, 1, 'a plan turn must reach the delegated model, not the consensus stitch')
   assert.deepEqual(seen[0].tools, [{ name: 'edit' }], 'the delegate needs the tools or it cannot act')
   assert.ok(!chunks.some(c => String(c.text ?? '').includes('共识评审中')), 'no fused-review marker for a plan turn')
+})
+
+test('the delegate chain falls through to the next model when the first is unavailable', async () => {
+  // One exhausted account must not take the whole consultation layer down: `/status` stayed green
+  // while every direct turn failed, because a single delegate model was out of balance.
+  const asked = []
+  const llm = {
+    stream: async function * (options) {
+      asked.push(`${options.provider}/${options.model}`)
+      if (options.provider === 'dead') {
+        yield { type: 'finish', reason: { kind: 'error', failure: { message: 'Insufficient Balance', code: 'QUOTA' } } }
+        return
+      }
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: '来自备用模型' }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: '来自备用模型' } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+    resolveModel: async () => ({ context: { contextWindow: 131_072 }, defaultMaxTokens: 4096 }),
+  }
+  const adapter = new EtoAdapter({
+    settings: () => ({ delegateModel: 'dead/x, live/y' }),
+    ctx: { get: name => (name === 'llm' ? llm : undefined), logger: { warn() {} } },
+    consensusEnv: () => undefined,
+  })
+  const chunks = []
+  for await (const chunk of adapter.delegate({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] })) {
+    chunks.push(chunk)
+  }
+
+  assert.deepEqual(asked, ['dead/x', 'live/y'], 'the dead route is tried once, then the next entry')
+  const text = chunks.map(c => c.text ?? '').join('')
+  assert.match(text, /来自备用模型/)
+  assert.match(text, /已回落到 live\/y/, 'the fallback must be stated, not silent')
+  assert.ok(!chunks.some(c => c.type === 'finish' && c.reason?.kind === 'error'), 'a recovered chain is not an error')
+})
+
+test('parseDelegateChain keeps a single entry when the setting is blank', () => {
+  assert.deepEqual(parseDelegateChain(''), [{ provider: DEFAULT_DELEGATE_PROVIDER, model: DEFAULT_DELEGATE_MODEL }])
+  assert.deepEqual(parseDelegateChain('a/b, c/d ,,').map(r => `${r.provider}/${r.model}`), ['a/b', 'c/d'])
 })

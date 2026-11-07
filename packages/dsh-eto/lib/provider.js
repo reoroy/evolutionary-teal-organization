@@ -53,11 +53,28 @@ export function capPlan(plan) {
 
 /** Split a `provider/model` delegate setting into its two halves. */
 export function parseDelegateRoute(value) {
+  return parseDelegateChain(value)[0]
+}
+
+/**
+ * A delegate setting may name a fallback chain: `provider/model,provider/model,...`.
+ * The first entry that answers is used, so one exhausted account cannot take the whole
+ * consultation layer down — which is exactly what happened when a single delegate model
+ * ran out of balance and every `direct` turn started failing while `/status` stayed green.
+ */
+export function parseDelegateChain(value) {
   const text = String(value ?? '').trim()
-  if (text === '') return { ...DEFAULT_DELEGATE }
-  const slash = text.indexOf('/')
-  if (slash === -1) return { provider: DEFAULT_DELEGATE.provider, model: text }
-  return { provider: text.slice(0, slash), model: text.slice(slash + 1) }
+  if (text === '') return [{ ...DEFAULT_DELEGATE }]
+  const chain = []
+  for (const raw of text.split(',')) {
+    const entry = raw.trim()
+    if (entry === '') continue
+    const slash = entry.indexOf('/')
+    chain.push(slash === -1
+      ? { provider: DEFAULT_DELEGATE.provider, model: entry }
+      : { provider: entry.slice(0, slash), model: entry.slice(slash + 1) })
+  }
+  return chain.length === 0 ? [{ ...DEFAULT_DELEGATE }] : chain
 }
 
 /** Rough token estimate for usage reporting (chars ÷ 4). */
@@ -291,7 +308,6 @@ export class EtoAdapter extends LlmAdapter {
       yield { type: 'finish', reason: { kind: 'error', failure: { code: 'UNKNOWN', message } } }
       return
     }
-    const route = parseDelegateRoute(this.settings()?.delegateModel)
     // Forward EVERYTHING the harness asked for, overriding only the route. Dropping fields here
     // is how the delegate ends up without tools: the model then has no tool schema to fill, so it
     // emits its native tool-call markup as plain text and nothing ever executes. `tools` is not
@@ -300,13 +316,67 @@ export class EtoAdapter extends LlmAdapter {
     // travel with it: 2048 tokens is the fused-summary size, and clamping a real answer to it
     // ends the turn with `max-tokens` before the reply is finished.
     const { provider: _provider, model: _model, maxTokens: _maxTokens, ...rest } = options
-    let budget = route.maxTokens
-    if (budget === undefined) {
+    const chain = parseDelegateChain(this.settings()?.delegateModel)
+    const failures = []
+    for (const route of chain) {
+      let budget = route.maxTokens
+      if (budget === undefined) {
+        try {
+          const target = await llm.resolveModel?.(route.provider, route.model)
+          if (typeof target?.defaultMaxTokens === 'number') budget = target.defaultMaxTokens
+        } catch { /* omit the budget and let the target decide */ }
+      }
+      const ask = () => llm.stream({ ...rest, provider: route.provider, model: route.model, ...(budget === undefined ? {} : { maxTokens: budget }) })
+      // Hold chunks until the route produces real content. A provider that is out of balance
+      // fails before any text arrives, so nothing has been shown to the caller yet and the chain
+      // can move on. Once text has been committed the answer belongs to this route — a later
+      // failure is reported instead of silently asking the next model (that would duplicate it).
+      const pending = []
+      let failed = null
+      let committed = false
       try {
-        const target = await llm.resolveModel?.(route.provider, route.model)
-        if (typeof target?.defaultMaxTokens === 'number') budget = target.defaultMaxTokens
-      } catch { /* omit the budget and let the target decide */ }
+        // Iterate ONCE to completion. Breaking out of `for await` closes the iterator, so the
+        // "wait until the first real text before committing" rule is expressed as a flag rather
+        // than an early break — the same generator keeps producing the rest of the answer.
+        for await (const chunk of ask()) {
+          if (chunk?.type === 'finish' && chunk.reason?.kind === 'error') {
+            // A failure before any content can still fall through to the next route; one that
+            // arrives after content is reported, because the reply is already half-delivered.
+            failed = chunk.reason.error ?? { message: 'stream error' }
+            break
+          }
+          if (!committed) {
+            pending.push(chunk)
+            if (chunk?.type === 'text-delta' && String(chunk.text ?? '').trim() !== '') {
+              committed = true
+              if (failures.length > 0) {
+                yield { type: 'text-delta', index: 0, text: `（${failures.length} 个委托模型不可用，已回落到 ${route.provider}/${route.model}）\n` }
+              }
+              for (const held of pending) yield held
+              pending.length = 0
+            }
+          } else {
+            yield chunk
+          }
+        }
+      } catch (error) {
+        failed = { message: error instanceof Error ? error.message : String(error) }
+      }
+      if (committed || failed === null) {
+        // Committed content (or a clean empty stop) is this route's answer; flush whatever is left.
+        for (const held of pending) yield held
+        return
+      }
+      if (failed === null) failed = { message: 'stream produced no content' }
+      failures.push(`${route.provider}/${route.model}: ${failed.message}`)
+      this.ctx?.logger?.warn?.(`dsh-eto: delegate ${route.provider}/${route.model} failed (${failed.message}); trying next`)
     }
-    yield* llm.stream({ ...rest, provider: route.provider, model: route.model, ...(budget === undefined ? {} : { maxTokens: budget }) })
+    yield {
+      type: 'finish',
+      reason: {
+        kind: 'error',
+        failure: { code: 'UNKNOWN', message: `所有委托模型都不可用：${failures.join(' | ')}` },
+      },
+    }
   }
 }
