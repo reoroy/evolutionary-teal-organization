@@ -21,10 +21,10 @@ export const ETO_PROVIDER = 'eto'
 /** The one model this provider advertises. */
 export const ETO_MODEL = 'eto-consensus'
 
-/** Advertised context window: the fused reply is a bounded summary + JSON. */
-const CONTEXT_WINDOW = 262_144
-/** Default output budget: consensus JSON plus a short fusion summary. */
-const DEFAULT_MAX_TOKENS = 8_192
+/** Advertised context window: the smallest peer (local qwen3-8b ≈ 32k) is the real limit. */
+const CONTEXT_WINDOW = 32_768
+/** Default output budget: a short fusion conclusion plus a little structure. */
+const DEFAULT_MAX_TOKENS = 2_048
 /** The three peers vote.py fuses by default; keep in sync with the stitch. */
 const PEERS = ['researcher', 'coder', 'auditor']
 
@@ -65,8 +65,13 @@ function sourceLabel(source) {
   return model ? `${provider}/${model}` : provider
 }
 
+/** Whether the plan explicitly asks for the full JSON result. */
+function wantsFullResult(plan, settings) {
+  return String(plan ?? '').includes('完整结果') || settings?.includeFullResult === true
+}
+
 /** Render the consensus value into the streamed reply text. */
-export function renderConsensus(value) {
+export function renderConsensus(value, { full = false } = {}) {
   const record = value ?? {}
   const votes = Array.isArray(record.votes) ? record.votes : []
   const usable = votes.filter(vote => vote && typeof vote.score === 'number')
@@ -100,7 +105,10 @@ export function renderConsensus(value) {
     lines.push('', '行动项：')
     for (const action of record.actions) lines.push(`- ${String(action)}`)
   }
-  lines.push('', '完整结果：', JSON.stringify(record, null, 2))
+  // Full JSON only on explicit request (B): it is the noisy tail, not the answer.
+  if (full) {
+    lines.push('', '完整结果：', JSON.stringify(record, null, 2))
+  }
   return lines.join('\n')
 }
 
@@ -216,7 +224,7 @@ export class EtoAdapter extends LlmAdapter {
       return
     }
 
-    const rendered = renderConsensus(value)
+    const rendered = renderConsensus(value, { full: wantsFullResult(plan, this.settings()) })
     for (const chunk of chunkText(rendered)) yield { type: 'text-delta', index: 0, text: chunk }
     yield { type: 'block-end', index: 0, block: { type: 'text', text: rendered } }
     yield {

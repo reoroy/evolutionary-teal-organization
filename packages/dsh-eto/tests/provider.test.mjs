@@ -208,3 +208,10 @@ test('a direct-routed turn delegates to the host model and does not fuse', async
     process.env.HOME = previous
   }
 })
+
+test('the adapter advertises an honest context window and output budget', async () => {
+  const adapter = new EtoAdapter({ settings: () => ({}), ctx: { logger: { warn() {} } }, consensusEnv: () => undefined })
+  const resolved = await adapter.resolveModel(ETO_PROVIDER, ETO_MODEL)
+  assert.ok(resolved.context.contextWindow <= 32_768, `contextWindow ${resolved.context.contextWindow} must not exceed the smallest peer`)
+  assert.ok(resolved.defaultMaxTokens <= 2_048, `defaultMaxTokens ${resolved.defaultMaxTokens} must stay a short conclusion budget`)
+})
