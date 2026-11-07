@@ -25,7 +25,7 @@ const fakeCtx = () => ({
 })
 
 const settings = () => resolveSettings({}, { home: '/home/tester' })
-const build = () => createTools({ ctx: fakeCtx(), settings })
+const build = () => createTools({ ctx: fakeCtx(), settings }).tools
 
 test('registers the fourteen tools with no MCP prefix', () => {
   const tools = build()
@@ -84,7 +84,7 @@ test('the Python dispatch table and the JS catalog agree', () => {
 })
 
 test('enabledTools whitelists by name', () => {
-  const all = createTools({ ctx: fakeCtx(), settings: () => resolveSettings({ enabledTools: [] }, { home: '/h' }) })
+  const all = createTools({ ctx: fakeCtx(), settings: () => resolveSettings({ enabledTools: [] }, { home: '/h' }) }).tools
   assert.equal(all.length, TOOL_NAMES.length)
 })
 

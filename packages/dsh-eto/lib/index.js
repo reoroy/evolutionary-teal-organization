@@ -24,7 +24,7 @@ import { existsSync } from 'node:fs'
 import { Config, resolveSettings, settingsView } from './config.js'
 import { listReviews, readReview } from './reviews.js'
 import { runTool } from './spawn.js'
-import { TOOL_NAMES, createTools, scorePeerText } from './tools.js'
+import { TOOL_NAMES, createTools, scorePeerText, callLlmRaw } from './tools.js'
 
 /** Peers a panel review asks, in the order ETO itself uses for T1. */
 const REVIEW_PEERS = ['researcher', 'coder', 'auditor']
@@ -216,7 +216,7 @@ export function apply(ctx, entryConfig) {
   // running config without remounting the plugin. Registration therefore has to
   // be reconciled in place: `syncTools` adds and removes only the difference, so
   // a save takes effect on the next model request instead of on the next restart.
-  const definitions = createTools({ ctx, settings: settingsRef })
+  const { tools: definitions, dsh: dshEndpointApi } = createTools({ ctx, settings: settingsRef })
   const syncTools = () => {
     const enabled = settingsRef().enabledTools
     const unknown = enabled.filter(name => !TOOL_NAMES.includes(name))
@@ -260,6 +260,14 @@ export function apply(ctx, entryConfig) {
   // Routes ride an optional webServer sub-fiber: a headless host composes no web
   // server and keeps the tools alone.
   ctx.inject(['webServer'], webCtx => {
+    // The web server's port is OS-assigned, so runners learn it through the environment:
+    // ETO consensus peers vote through the host's LLM service as a virtual provider.
+    try {
+      const port = webCtx.webServer.port
+      if (port) dshEndpointApi.setDshEndpoint(`http://127.0.0.1:${port}${API}`)
+    } catch (error) {
+      ctx.logger?.warn?.(`dsh-eto: could not expose DSH endpoint to runners: ${error instanceof Error ? error.message : String(error)}`)
+    }
     registerRoute(webCtx, {
       kind: 'prefix',
       path: API,
@@ -342,7 +350,30 @@ export function apply(ctx, entryConfig) {
             json(res, 200, { id: job.id, cancelled: true })
             return
           }
-          if (sub === '/peer-score' && req.method === 'POST') {
+          if (sub === '/llm' && req.method === 'POST') {
+          const chunks = []
+          for await (const chunk of req) chunks.push(chunk)
+          let body = {}
+          try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { /* handled below */ }
+          const provider = typeof body.provider === 'string' ? body.provider.trim() : ''
+          const model = typeof body.model === 'string' ? body.model.trim() : ''
+          const prompt = typeof body.prompt === 'string' ? body.prompt : ''
+          if (provider === '' || model === '' || prompt.trim() === '') {
+            json(res, 400, { _error: true, error: 'llm needs non-empty provider, model and prompt' })
+            return
+          }
+          try {
+            const text = await callLlmRaw({ ctx, provider, model,
+              system: typeof body.system === 'string' ? body.system : '',
+              prompt, maxTokens: Number(body.maxTokens) || 1024,
+              timeoutMs: Number(body.timeoutMs) || 120_000 })
+            json(res, 200, { _text: text, provider, model })
+          } catch (error) {
+            json(res, 502, { _error: true, error: error instanceof Error ? error.message : String(error) })
+          }
+          return
+        }
+        if (sub === '/peer-score' && req.method === 'POST') {
             const chunks = []
             for await (const chunk of req) chunks.push(chunk)
             let body = {}

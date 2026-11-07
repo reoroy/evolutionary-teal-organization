@@ -49,7 +49,7 @@ const agentOn = (provider, model) => ({
 const settings = (overrides = {}) => resolveSettings(overrides, { home: '/h' })
 
 /** `createTools` takes a resolver; these tests pass one resolved snapshot. */
-const scoreTool = (ctx, resolved) => createTools({ ctx, settings: () => resolved }).find(tool => tool.name === 'eto_peer_score')
+const scoreTool = (ctx, resolved) => createTools({ ctx, settings: () => resolved }).tools.find(tool => tool.name === 'eto_peer_score')
 
 /** Run the score tool; a write-back spawn is expected to fail under this fake HOME. */
 const run = (tool, args, exec = {}) => tool.execute(args, {
