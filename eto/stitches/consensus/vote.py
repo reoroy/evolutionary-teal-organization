@@ -506,6 +506,127 @@ def peer_review(plan: str, peers: list[str]) -> dict:
     return result
 
 
+# ── 会诊模式（mode="advise"）：不评分，只给建议/分歧/风险 ──────────────────
+# 与 `peer_review` 的「评分卡」不同：advise 是「会诊层」的输出，主模型拿到后
+# 可以直接采用来继续执行，而不是看一个分数。复用 `_call_peer`/`_parse_provider_error`
+# 的 provider 通道与降级语义，但**不改变** `peer_review` 的融合算法（PR #56）。
+
+ADVISE_INSTRUCTION = (
+    "请对下面的方案给出会诊建议（不要评分）。只输出一个 JSON 对象："
+    '{"suggestion": "具体怎么做、最该先做什么（一句话）", "risk": "最大的风险（一句话）", "disagreement": "你与上述做法不同的地方，没有就填空串"}'
+)
+
+ADVISE_SYNTHESIS_PROMPT = (
+    "下面是多个不同架构的模型对同一方案的会诊建议。请融合成一段可直接执行的建议：\n"
+    "- 先给「最该先做什么」，再给必须规避的风险\n"
+    "- 如果有互相冲突的做法，明确指出分歧点\n"
+    "不超过 120 字，不要评分，不要客套。"
+)
+
+
+def _advise_single(peer: str, plan: str) -> dict:
+    """单 peer 会诊建议，返回 {advice, risk, disagreement}（不评分）。"""
+    system = PEER_SYSTEM_PROMPTS.get(peer, "你是一个评审专家。")
+    raw = _call_peer(peer, system, ADVISE_INSTRUCTION + "\n\n方案:\n" + plan)
+    fallback = False
+    if isinstance(raw, str) and raw.startswith(_FALLBACK_MARK):
+        raw = raw[len(_FALLBACK_MARK):]
+        fallback = True
+
+    peer_cfg = _load_peer_config().get(peer, DEFAULT_PEER_CONFIG.get(peer, DEFAULT_PEER_CONFIG["researcher"]))
+    result = {
+        "peer": peer,
+        "provider": "ollama(fallback)" if fallback else peer_cfg.get("provider", "ollama"),
+        "model": MODEL if fallback else peer_cfg.get("model", MODEL),
+        "advice": "",
+        "risk": "",
+        "disagreement": "",
+    }
+    failure = _parse_provider_error(raw)
+    if failure is not None:
+        logger.error("peer=%s provider=%s/%s 无响应: %s", peer, failure.get("provider"), failure.get("model"), failure.get("reason"))
+        result["advice"] = f"[{peer}] provider {failure.get('provider')}/{failure.get('model')} 无响应: {failure.get('reason')}"[:300]
+        result["degraded"] = True
+        return result
+    parsed = _extract_json(raw)
+    if parsed is None:
+        logger.error("peer=%s 回复无法解析为会诊 JSON（前 120 字）: %r", peer, raw[:120])
+        result["advice"] = f"[{peer}] 回复无法解析为会诊 JSON: {raw[:120]}"
+        result["degraded"] = True
+        return result
+    result["advice"] = (parsed.get("suggestion", "") or "")[:300]
+    result["risk"] = (parsed.get("risk", "") or "")[:300]
+    result["disagreement"] = (parsed.get("disagreement", "") or "")[:300]
+    return result
+
+
+def _synthesize_advise(plan: str, votes: list) -> str:
+    """把多个 peer 的会诊建议融合成一段可直接执行的建议（走本机模型，免费）。"""
+    usable = [v for v in votes if v.get("advice") and not v.get("degraded")]
+    if len(usable) < 2:
+        return (usable[0]["advice"] if usable else "")
+    lines = []
+    for v in usable:
+        lines.append(f"[{v['peer']}] 建议: {v.get('advice','')} | 风险: {v.get('risk','')} | 分歧: {v.get('disagreement','')}")
+    prompt = ADVISE_SYNTHESIS_PROMPT + "\n\n方案:\n" + plan[:1200] + "\n\n各方建议:\n" + "\n".join(lines)
+    try:
+        raw = _call_ollama(MODEL, prompt)
+    except Exception as e:
+        logger.warning("会诊聚合失败（保留各 peer 原文）: %s: %s", type(e).__name__, e)
+        return ""
+    failure = _parse_provider_error(raw)
+    if failure is not None:
+        logger.warning("会诊聚合失败: %s", failure.get("reason"))
+        return ""
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if text.startswith("{"):
+        try:
+            inner = json.loads(text)
+            for key in ("conclusion", "synthesis", "advice", "text", "summary", "result"):
+                if isinstance(inner.get(key), str) and inner[key].strip():
+                    return inner[key].strip()[:800]
+        except json.JSONDecodeError:
+            pass
+    return text[:800]
+
+
+def peer_advise(plan: str, peers: list[str]) -> dict:
+    """会诊模式：不评分，只给「建议怎么做 + 分歧 + 风险」，主模型可直接采用。
+
+    与 `peer_review` 同源但不共享评分卡结构：输出无 `final_score` / `status` 语义，
+    只有 `mode="advise"` + `synthesis` + 各 peer 的建议/风险/分歧。
+    """
+    votes = [_advise_single(p, plan) for p in peers]
+    degraded = [v for v in votes if v.get("degraded")]
+    usable = [v for v in votes if not v.get("degraded")]
+
+    advice = [f"[{v['peer']}] {v.get('advice','')}".strip() for v in usable if v.get("advice")]
+    risks = [v.get("risk", "").strip() for v in usable if v.get("risk", "").strip()]
+    disagreements = [v.get("disagreement", "").strip() for v in usable if v.get("disagreement", "").strip()]
+
+    result = {
+        "mode": "advise",
+        "status": "advised",
+        "synthesis": _synthesize_advise(plan, usable) if len(usable) >= 2 else (usable[0]["advice"] if usable else ""),
+        "advice": advice,
+        "risks": risks,
+        "disagreements": disagreements,
+        "votes": votes,
+        "fusion": {
+            "sources": [{"peer": v["peer"], "provider": v.get("provider", "?"), "model": v.get("model", "?")} for v in votes],
+            "distinct_providers": len({_source_of(v) for v in votes if v.get("provider")}),
+            "aggregator": f"ollama/{MODEL}",
+        },
+        "audit_id": f"v{int(__import__('time').time())}",
+    }
+    if degraded:
+        result["degraded"] = True
+        result["degraded_peers"] = [v["peer"] for v in degraded]
+    return result
+
+
 def _test_deliberation() -> dict:
     """测试用：用预设评分验证审议和终审逻辑，不调 LLM"""
     votes = [

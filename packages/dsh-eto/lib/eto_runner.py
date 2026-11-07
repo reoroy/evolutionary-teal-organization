@@ -136,13 +136,16 @@ def need(args: dict, key: str, kind: type = str):
 
 
 def eto_consensus(args: dict) -> dict:
-    from eto.stitches.consensus.vote import peer_review
+    from eto.stitches.consensus.vote import peer_advise, peer_review
 
     peers = args.get("peers")
     if peers is not None and (
         not isinstance(peers, list) or not all(isinstance(p, str) and p for p in peers)
     ):
         raise RunnerError("usage", "参数 peers 必须是字符串数组")
+    mode = args.get("mode") or "review"
+    if mode == "advise":
+        return peer_advise(need(args, "plan"), peers or ["researcher", "coder", "auditor"])
     return peer_review(
         need(args, "plan"), peers or ["researcher", "coder", "auditor"]
     )

@@ -126,6 +126,25 @@ export async function runConsensus({ settings, ctx, args, signal, env }) {
 }
 
 /**
+ * Run one `eto_route` classification (three-mirror routing). The virtual
+ * provider uses this as the gate: `direct` delegates to a real model, while
+ * `plan` / `consensus` proceed to the fused peer review. No persistence — this
+ * is the read-only classifier, not the review itself.
+ *
+ * @param {object} options
+ * @param {() => object} options.settings - resolves the current settings snapshot.
+ * @param {object} options.args - tool arguments (task).
+ * @param {AbortSignal} [options.signal] - caller cancellation.
+ * @param {NodeJS.ProcessEnv} [options.env] - child environment override.
+ * @returns {Promise<object>} the route ETO returned ({ gewu, route, confidence }).
+ */
+export async function runRoute({ settings, args, signal, env }) {
+  const result = await runTool({ settings: settings(), tool: 'eto_route', args, signal, env })
+  if (!result.ok) throw failureOf('eto_route', result)
+  return result.value
+}
+
+/**
  * Build the tool definitions for one plugin instance.
  * @param {object} options
  * @param {import('@deepseek-ai/cordis').Context} options.ctx - plugin context.
@@ -169,10 +188,11 @@ export function createTools({ ctx, settings }) {
 
   const tools = [
     eto('eto_consensus', {
-      description: 'ETO 同侪共识评审：对执行计划做评分→审议→终审三阶段，返回 status / final_score / votes / deliberation / actions。默认 peer 为 researcher、coder、auditor，评分走 ETO 配置的 provider（可能是 Ollama，慢时请设更长超时）。',
+      description: 'ETO 同侪共识。默认 review 模式：对执行计划做评分→审议→终审三阶段，返回 status / final_score / votes / deliberation / actions。mode="advise" 为会诊模式：不评分，返回 synthesis / advice / risks / disagreements，主模型可直接采用。默认 peer 为 researcher、coder、auditor，评分走 ETO 配置的 provider（可能是 Ollama，慢时请设更长超时）。',
       parameters: objectSchema({
-        plan: string('要评审的执行计划全文'),
+        plan: string('要评审或会诊的执行计划全文'),
         peers: stringArray('可选 peer 列表，默认 researcher/coder/auditor'),
+        mode: string('review（评分卡）或 advise（建议/分歧/风险，不含评分），默认 review'),
       }, ['plan']),
       schema: objectSchema({
         status: string('approved | revise | reject'),
@@ -183,7 +203,9 @@ export function createTools({ ctx, settings }) {
       }, ['status', 'final_score', 'votes']),
       render: (args, value) => [{
         type: 'text',
-        text: `eto_consensus: ${value.status} (score ${value.final_score})\n${JSON.stringify(value, null, 2)}`,
+        text: value?.mode === 'advise'
+          ? `eto_consensus: ${value.synthesis ?? '（无有效建议）'}\n${JSON.stringify(value, null, 2)}`
+          : `eto_consensus: ${value.status} (score ${value.final_score})\n${JSON.stringify(value, null, 2)}`,
       }],
       // Persist the review for the panel ledger the moment it completes. This is
       // best-effort: a lost write must never turn a real consensus into a tool

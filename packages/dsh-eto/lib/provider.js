@@ -1,19 +1,20 @@
 /**
- * ETO as a virtual LLM provider.
+ * ETO as a virtual LLM provider — an explicit "review this plan" surface, not a
+ * session main model.
  *
- * This is the "select it like a model" surface: an `LlmAdapter` registered on
- * the `eto` route. Selecting `eto / eto-consensus` in the model picker routes
- * every turn through vote.py's three-source heterogeneous consensus (local
- * Qwen × deepseek-official × qodercn/GLM → one fused conclusion) and streams
- * the fused result back through the harness LLM contract.
+ * Selecting `eto / eto-consensus` routes each turn through `eto_route` first:
+ * a `direct` turn (ordinary question) is delegated to a real model untouched;
+ * only `plan` / `consensus` turns open vote.py's three-source heterogeneous
+ * consensus and stream the fused conclusion back through the harness LLM
+ * contract. ETO is the consultation layer — execution stays with the harness.
  *
- * The fusion itself lives in `eto/stitches/consensus/vote.py`; this module is
- * only the adapter layer. It runs the consensus through the same
+ * The fusion lives in `eto/stitches/consensus/vote.py`; this module is only the
+ * adapter layer. It runs the consensus through the same
  * `runTool({ tool: 'eto_consensus' })` channel the tool uses, so there is
  * exactly one fusion implementation and one persistence path.
  */
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
-import { runConsensus } from './tools.js'
+import { runConsensus, runRoute } from './tools.js'
 
 /** Provider route id; the model picker shows this as the provider name. */
 export const ETO_PROVIDER = 'eto'
@@ -26,6 +27,18 @@ const CONTEXT_WINDOW = 262_144
 const DEFAULT_MAX_TOKENS = 8_192
 /** The three peers vote.py fuses by default; keep in sync with the stitch. */
 const PEERS = ['researcher', 'coder', 'auditor']
+
+/** Fallback delegate route when the setting is blank: "provider/model". */
+const DEFAULT_DELEGATE = { provider: 'deepseek-official', model: 'deepseek-flash' }
+
+/** Split a `provider/model` delegate setting into its two halves. */
+export function parseDelegateRoute(value) {
+  const text = String(value ?? '').trim()
+  if (text === '') return { ...DEFAULT_DELEGATE }
+  const slash = text.indexOf('/')
+  if (slash === -1) return { provider: DEFAULT_DELEGATE.provider, model: text }
+  return { provider: text.slice(0, slash), model: text.slice(slash + 1) }
+}
 
 /** Rough token estimate for usage reporting (chars ÷ 4). */
 const estimateTokens = text => Math.max(1, Math.ceil(String(text ?? '').length / 4))
@@ -117,7 +130,7 @@ export class EtoAdapter extends LlmAdapter {
       provider,
       id: ETO_MODEL,
       name: 'ETO 三源异构共识',
-      description: '本机 Qwen × deepseek-official × qodercn/GLM 三源异构融合，每轮自动跑（30–90 秒，免费）。',
+      description: '三源异构融合评审（本机 Qwen × deepseek-official × qodercn/GLM）。适合主动评审一段方案；不建议当会话主模型（普通问答会走 direct 委托真模型）。',
       inputModalities: ['text'],
     }])
   }
@@ -137,9 +150,8 @@ export class EtoAdapter extends LlmAdapter {
     const signal = options.signal
     const plan = lastUserText(options.messages ?? [])
 
-    yield { type: 'block-start', index: 0, blockType: 'text' }
-
     if (plan === '') {
+      yield { type: 'block-start', index: 0, blockType: 'text' }
       const empty = '（本会话没有可评审的文本内容）'
       yield { type: 'text-delta', index: 0, text: empty }
       yield { type: 'block-end', index: 0, block: { type: 'text', text: empty } }
@@ -147,6 +159,35 @@ export class EtoAdapter extends LlmAdapter {
       yield { type: 'finish', reason: { kind: 'stop' } }
       return
     }
+
+    // Routing gate (A): classify before any fusion. A `direct` turn is an
+    // ordinary question — delegate to a real model so the user gets an answer,
+    // not a peer review. Only `plan` / `consensus` open the fused review.
+    let route
+    try {
+      route = await runRoute({
+        settings: this.settings,
+        args: { task: plan },
+        signal,
+        env: this.consensusEnv(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      yield {
+        type: 'finish',
+        reason: {
+          kind: 'error',
+          failure: { code: 'UNKNOWN', message: `ETO route failed: ${message}` },
+        },
+      }
+      return
+    }
+    if (route?.route === 'direct') {
+      yield* this.delegate(options)
+      return
+    }
+
+    yield { type: 'block-start', index: 0, blockType: 'text' }
 
     // A live signal before the (slow) consensus: the fused result cannot exist
     // until all three peers answer. This is the honest "long task" marker, not a
@@ -187,5 +228,26 @@ export class EtoAdapter extends LlmAdapter {
       },
     }
     yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+
+  /**
+   * Forward a `direct` turn to a real model through the host's LLM service, so
+   * the user gets an answer instead of a peer review. The messages are passed
+   * through untouched; only the route is chosen from the delegate setting.
+   */
+  async *delegate(options) {
+    const llm = this.ctx?.get?.('llm')
+    if (llm === undefined || typeof llm.stream !== 'function') {
+      const message = 'ETO routed this turn direct, but no llm service is composed to delegate the answer to'
+      yield { type: 'finish', reason: { kind: 'error', failure: { code: 'UNKNOWN', message } } }
+      return
+    }
+    const route = parseDelegateRoute(this.settings()?.delegateModel)
+    yield* llm.stream({
+      provider: route.provider,
+      model: route.model,
+      messages: options.messages,
+      signal: options.signal,
+    })
   }
 }

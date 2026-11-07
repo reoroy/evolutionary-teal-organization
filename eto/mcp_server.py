@@ -9,21 +9,33 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("eto", instructions="ETO 青色组织多 Agent 编排系统 - 共识评分 / 路由分析 / Peer 配置")
 
-@mcp.tool(description="同侪共识评分：三阶段（评分→审议→终审），返回包含 status/final_score/votes/deliberation/actions 的 JSON")
-def eto_consensus(plan: str, peers: list[str] | None = None) -> str:
-    from eto.stitches.consensus.vote import peer_review
-    result = peer_review(plan, peers or ["researcher", "coder", "auditor"])
+@mcp.tool(description="同侪共识：review 模式返回 status/final_score/votes/deliberation/actions；advise 模式返回建议/分歧/风险（不含评分）")
+def eto_consensus(plan: str, peers: list[str] | None = None, mode: str = "review") -> str:
+    from eto.stitches.consensus.vote import peer_advise, peer_review
+    if mode == "advise":
+        result = peer_advise(plan, peers or ["researcher", "coder", "auditor"])
+    else:
+        result = peer_review(plan, peers or ["researcher", "coder", "auditor"])
     return json.dumps(result, ensure_ascii=False)
 
 @mcp.tool(description="三镜路由：分析任务属于 knowledge/research/code/solution 并返回 direct/plan/consensus 路由")
 def eto_route(task: str) -> str:
     t = task.lower()
-    if any(k in t for k in ["delete", "remove", "deploy", "销毁", "删除", "部署"]):
+    # Destructive / irreversible / launch decisions → consensus (a real decision).
+    if any(k in t for k in ["delete", "remove", "deploy", "销毁", "删除", "部署", "上线"]):
         return json.dumps({"gewu": "solution", "route": "consensus", "confidence": 1.0, "layer": "keyword"})
+    # Questions asking for an answer / review of existing work → direct: the model
+    # answers, ETO does not open a peer review. This must come before the
+    # produce-work keywords so 「这段代码有没有问题」 routes direct, not plan.
+    if any(k in t for k in ["有没有问题", "有没有 bug", "有没有bug", "有问题吗", "帮我看看", "看看", "检查", "调试", "对不对", "是否正确", "check", "debug"]):
+        return json.dumps({"gewu": "code", "route": "direct", "confidence": 0.85, "layer": "keyword"})
+    # Research / analysis / reports → plan.
     if any(k in t for k in ["研究", "调研", "分析", "报告", "research", "study"]):
         return json.dumps({"gewu": "research", "route": "plan", "confidence": 0.85, "layer": "keyword"})
+    # Produce work (code / solution) → plan.
     if any(k in t for k in ["写", "代码", "实现", "重构", "制作", "生成", "创建", "设计", "计划", "方案", "write", "code", "implement"]):
         return json.dumps({"gewu": "code", "route": "plan", "confidence": 0.85, "layer": "keyword"})
+    # Knowledge questions → direct.
     if any(k in t for k in ["什么是", "是什么", "what is", "explain", "define"]):
         return json.dumps({"gewu": "knowledge", "route": "direct", "confidence": 0.9, "layer": "keyword"})
     return json.dumps({"gewu": "knowledge", "route": "direct", "confidence": 0.7, "layer": "keyword"})

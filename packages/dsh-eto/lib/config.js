@@ -31,6 +31,8 @@ export const Config = z.object({
   peerScoreModel: z.string().default('').volatile(),
   /** Deadline for one `eto_peer_score` model call. */
   peerScoreTimeoutMs: z.number().min(5_000).max(600_000).default(90_000).volatile(),
+  /** `provider/model` route the direct-answer delegate uses (routing gate A). */
+  delegateModel: z.string().default('deepseek-official/deepseek-flash').volatile(),
   /** Environment names forwarded to the child, beyond the non-secret baseline. */
   envPassthrough: z.array(z.string()).default([]).volatile(),
 })
@@ -101,6 +103,7 @@ export function resolveSettings(raw, options = {}) {
     peerScoreProvider: str(value.peerScoreProvider, ''),
     peerScoreModel: str(value.peerScoreModel, ''),
     peerScoreTimeoutMs: num(value.peerScoreTimeoutMs, 90_000),
+    delegateModel: str(value.delegateModel, 'deepseek-official/deepseek-flash'),
     envPassthrough: list(value.envPassthrough),
   }
 }
@@ -116,6 +119,7 @@ export function settingsView(settings) {
     peerScoreProvider: settings.peerScoreProvider,
     peerScoreModel: settings.peerScoreModel,
     peerScoreTimeoutMs: settings.peerScoreTimeoutMs,
+    delegateModel: settings.delegateModel,
     envPassthrough: settings.envPassthrough,
   }
 }
