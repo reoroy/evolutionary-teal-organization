@@ -222,7 +222,11 @@ export class EtoAdapter extends LlmAdapter {
       }
       return
     }
-    if (route?.route === 'direct') {
+    // Only an explicit consensus request opens a peer review. `plan` looks like a decision to the
+    // router, but a plan still has to be CARRIED OUT — answering it with a review of the plan is what
+    // made a "fix this file" turn come back as three opinions and no edit. So `direct` and `plan`
+    // both delegate to the real model (which has the tools); the fused review is opt-in.
+    if (route?.route !== 'consensus') {
       yield* this.delegate(options)
       return
     }

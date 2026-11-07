@@ -63,12 +63,26 @@ const fakeCtx = (services = {}) => {
 
 const webServer = routes => ({ register(route) { routes.push(route); return () => {} } })
 
-/** A settings object whose `python` is a script emitting one consensus result. */
-function withFakePython(result) {
+/**
+ * A settings object whose `python` is a script emitting a fixed result.
+ *
+ * `byTool` lets a test answer different tools differently — the provider now asks `eto_route`
+ * before it decides whether to fuse, so a single blanket answer would make the route call return
+ * the consensus payload and silently skip the branch under test.
+ */
+function withFakePython(result, byTool = null) {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-eto-provider-'))
   const script = join(dir, 'fake-python')
+  // The runner is invoked as `eto_runner.py <tool>`; pick by the tool name it was given.
+  const table = byTool === null ? null : JSON.stringify(byTool)
   const sentinel = JSON.stringify({ ok: true, result })
-  writeFileSync(script, `#!/usr/bin/env node\nprocess.stdout.write("__ETO_RESULT__" + ${JSON.stringify(sentinel)})\n`, 'utf8')
+  const body = table === null
+    ? `process.stdout.write("__ETO_RESULT__" + ${JSON.stringify(sentinel)})`
+    : `const tool = process.argv[process.argv.length - 1];\n` +
+      `const table = ${table};\n` +
+      `const result = (table[tool] !== undefined) ? table[tool] : ${JSON.stringify(result)};\n` +
+      `process.stdout.write("__ETO_RESULT__" + JSON.stringify({ ok: true, result }))`
+  writeFileSync(script, `#!/usr/bin/env node\n${body}\n`, 'utf8')
   chmodSync(script, 0o755)
   return { settings: () => resolveSettings({ repo: dir, python: script }, { home: dir }), dir, script }
 }
@@ -115,7 +129,9 @@ test('a host without an llm service keeps the tools and registers no provider', 
 })
 
 test('the stream runs one consensus, persists a review, and ends with a stop finish', async () => {
-  const { settings, dir } = withFakePython(CONSENSUS)
+  const { settings, dir } = withFakePython(CONSENSUS, {
+    eto_route: { gewu: 'solution', route: 'consensus', confidence: 1, layer: 'keyword' },
+  })
   const previous = process.env.HOME
   process.env.HOME = dir
   try {
@@ -288,4 +304,34 @@ test('renderConsensus leads with the answer and omits the full JSON by default',
   const full = renderConsensus(CONSENSUS, { full: true })
   assert.ok(full.includes('完整结果'))
   assert.ok(full.includes('"audit_id"'))
+})
+
+test('a plan-routed turn executes instead of opening a peer review', async () => {
+  // "Read this file, find the bugs, fix it" routes as `plan` — a decision-shaped request that
+  // still has to be CARRIED OUT. Answering it with a review of the plan is what made a real fix
+  // request come back as three opinions and no edit, so plan must delegate like direct does.
+  const seen = []
+  const llm = {
+    stream: async function * (options) { seen.push(options); yield { type: 'finish', reason: { kind: 'stop' } } },
+    resolveModel: async () => ({ context: { contextWindow: 131_072 }, defaultMaxTokens: 4096 }),
+  }
+  const { settings, dir } = withFakePython(CONSENSUS, {
+    eto_route: { gewu: 'research', route: 'plan', confidence: 0.85, layer: 'keyword' },
+  })
+  const adapter = new EtoAdapter({
+    settings,
+    ctx: { get: name => (name === 'llm' ? llm : undefined), logger: { warn() {} } },
+    consensusEnv: () => childEnv(settings(), process.env),
+  })
+  const chunks = []
+  for await (const chunk of adapter.stream({
+    provider: ETO_PROVIDER,
+    model: ETO_MODEL,
+    messages: [{ role: 'user', content: [{ type: 'text', text: '读 demo/cart.py 找出缺陷并改好' }] }],
+    tools: [{ name: 'edit' }],
+  })) chunks.push(chunk)
+
+  assert.equal(seen.length, 1, 'a plan turn must reach the delegated model, not the consensus stitch')
+  assert.deepEqual(seen[0].tools, [{ name: 'edit' }], 'the delegate needs the tools or it cannot act')
+  assert.ok(!chunks.some(c => String(c.text ?? '').includes('共识评审中')), 'no fused-review marker for a plan turn')
 })
