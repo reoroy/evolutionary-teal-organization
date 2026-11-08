@@ -362,6 +362,13 @@ export class EtoAdapter extends LlmAdapter {
       } catch (error) {
         failed = { message: error instanceof Error ? error.message : String(error) }
       }
+      // Opt-in trace: with ETO_DEBUG_DELEGATE=1 every route in the chain reports what it did.
+      // The fallback is invisible otherwise, and "the answer came back" does not prove which
+      // model produced it — that ambiguity is what made a silent single-model ETO look healthy.
+      if (process.env.ETO_DEBUG_DELEGATE === '1') {
+        console.error('[dsh-eto][delegate]', route.provider + '/' + route.model,
+          'committed=' + committed, 'pending=' + pending.length, 'failed=' + JSON.stringify(failed))
+      }
       if (committed || failed === null) {
         // Committed content (or a clean empty stop) is this route's answer; flush whatever is left.
         for (const held of pending) yield held
