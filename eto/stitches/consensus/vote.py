@@ -25,15 +25,28 @@ PEER_SYSTEM_PROMPTS = {
 #: 架构差异越大效果越好 —— 本地 Qwen 密集 × 云端 GLM MoE × 云端 DeepSeek 系。
 #: `dsh` 是虚拟供应商：经插件端点回落到 DSH 宿主的 llm 服务，模型串是 `provider/model`。
 #: 覆盖方式：~/.pi/eto-config.json 的 {"peers": {"coder": {"provider": "...", "model": "..."}}}
+#: 局域网里那台 8GB 显存的机器（跑 35B-A3B MoE）。
+#:
+#: **默认留空**，不硬编码 IP：这个文件也会在 CI runner 和别人的机器上跑，那里没有这台机器，
+#: 写死地址会让调用一直等到超时（实测 CI 卡 15 分钟）。设 ETO_OLLAMA_REMOTE 才启用远端 peer。
+OLLAMA_REMOTE = os.environ.get("ETO_OLLAMA_REMOTE", "")
+
+#: 三个 peer 必须是**不同架构**，否则投票只是单模型自一致性（见
+#: docs/eto-work-usable-2026-11.md 引的算力归一化实验）。
+#:
+#: 注意：不要用本机原有的 `qwen3-8b-arb`。它的 Modelfile 只有 `TEMPLATE {{ .Prompt }}`，
+#: 没有 chat 模板，实测会把 JSON 当正文吐出来（「你好」→ {"code":200,...}）——
+#: 之前「所有 peer 无响应」的真正原因就是它，不是服务故障。
 DEFAULT_PEER_CONFIG = {
-    # 本机 Qwen（免费、无限、与云端不同源）
-    "researcher": {"provider": "ollama", "model": MODEL},
-    # 云端 DeepSeek：与 Qwen / GLM 都不同架构；实测 /llm 端点会返回 text 块
-    "coder": {"provider": "dsh", "model": "deepseek-official/deepseek-flash"},
-    # 云端智谱 GLM MoE：第三个架构。loomy/raccoon 只吐 reasoning 无 text，不能用于投票；
-    # trae 当日额度耗尽（code=4008）。
+    # gemma3:4b：85 tok/s，无 thinking 干扰，最稳的快速视角。
+    # host 为空 = 走本机 OLLAMA_URL；设了 ETO_OLLAMA_REMOTE 才指向局域网那台 8GB 机器。
+    "researcher": {"provider": "ollama", "model": "gemma3:4b", "host": OLLAMA_REMOTE},
+    # 35B-A3B MoE：稀疏激活，是真正的第三个架构，且不烧云端额度。
+    "coder": {"provider": "ollama", "model": "qwen3.6-35b-a3b:8g",
+              "host": OLLAMA_REMOTE, "think": False},
+    # 云端智谱 GLM：额度可用时提供第四个异构源；不可用时如实标 degraded，不假装成功。
     "auditor": {"provider": "dsh", "model": "qodercn/gfmodel"},
-    "终审仲裁者": {"provider": "ollama", "model": MODEL},
+    "终审仲裁者": {"provider": "ollama", "model": "gemma3:4b", "host": OLLAMA_REMOTE},
 }
 
 _PEER_CONFIG_CACHE = None
@@ -126,7 +139,7 @@ def _call_dsh(model: str, system: str, prompt: str) -> str:
     return text
 
 
-def _call_provider(provider: str, model: str, system: str, prompt: str) -> str:
+def _call_provider(provider: str, model: str, system: str, prompt: str, cfg: dict | None = None) -> str:
     """路由到不同的 LLM provider"""
     full = f"{system}\n\n{prompt}" if system else prompt
     if provider == "deepseek":
@@ -140,19 +153,39 @@ def _call_provider(provider: str, model: str, system: str, prompt: str) -> str:
         # model 形如 "loomy/glm-5.3-flash"（provider/model），这样每个 peer 可以是不同架构。
         return _call_dsh(model, system, prompt)
     else:
-        return _call_ollama(model, full)
+        peer_cfg = cfg or {}
+        return _call_ollama(model, full,
+                            host=str(peer_cfg.get("host") or ""),
+                            think=bool(peer_cfg.get("think")))
 
-def _call_ollama(model: str, full_prompt: str) -> str:
-    """调 Ollama generate API"""
-    data = json.dumps({"model": model, "prompt": full_prompt, "stream": False,
-        "options": {"temperature": 0.7, "num_predict": 800}}).encode("utf-8")
-    req = urllib.request.Request(f"{OLLAMA_URL}/api/generate", data=data,
+def _call_ollama(model: str, full_prompt: str, host: str = "", think: bool = False) -> str:
+    """调 Ollama，走 /api/chat。
+
+    为什么不是 /api/generate：带 thinking 的模型（qwen3.x / qwen3.6）在 generate 下会把
+    整段 num_predict 预算烧在思考上、response 为空；chat 会分开返回 thinking 与 content。
+    `think` 必须显式传（False 也传）——只省略不生效，实测 1500 token 时 thinking 占 2295 字。
+
+    `host` 允许把一个 peer 指到局域网里另一台机器：8GB 显存那台跑 35B-A3B 的 MoE，
+    总参 34.7B、每 token 只激活 3B，实测 41 tok/s，且不烧云端额度。
+    """
+    base = (host or OLLAMA_URL).rstrip("/")
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": full_prompt}],
+        "stream": False,
+        "think": bool(think),
+        "options": {"temperature": 0.7, "num_predict": 1600},
+    }
+    data = json.dumps(body).encode("utf-8")
+    # 远端 35B MoE 首包要十几秒，30s 不够。
+    req = urllib.request.Request(f"{base}/api/chat", data=data,
         headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            text = json.loads(resp.read().decode("utf-8")).get("response", "").strip()
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            message = (json.loads(resp.read().decode("utf-8")) or {}).get("message") or {}
+            text = (message.get("content") or "").strip()
         if text == "":
-            return _provider_error("ollama", model, "模型返回空文本")
+            return _provider_error("ollama", model, "模型返回空文本（预算可能全被 thinking 吃掉）")
         return text
     except Exception as e:
         # 传输失败必须可区分：返回 "" 会让上层把「没连上」当成「模型答了 0.5 分」。
@@ -262,7 +295,7 @@ def _call_peer(peer_name: str, system: str, prompt: str) -> str:
     provider = cfg.get("provider", "ollama")
     if provider == "mcp":
         return _call_mcp_agent(json.dumps(cfg, ensure_ascii=False), system, prompt)
-    return _call_provider(provider, cfg.get("model", MODEL), system, prompt)
+    return _call_provider(provider, cfg.get("model", MODEL), system, prompt, cfg)
 
 def _extract_json(text: str) -> dict | None:
     import re
