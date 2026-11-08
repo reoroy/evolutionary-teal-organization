@@ -79,6 +79,8 @@ window.__ModuleLoader__.load({
         peerConfigHint: '三个 peer 必须是不同架构，否则投票退化为单模型自一致性。provider 选 ollama（直连 HTTP）或 dsh（走宿主 llm 服务，model 填 provider/model）。',
         peerArchWarn: '⚠ 三个 peer 至少两个选不同架构（如一个 GLM、一个 DeepSeek）。全选同一架构 = 单模型自评，融合无意义。',
         peerConfigSaveHint: '保存后写入 ~/.pi/eto-config.json，下次会诊生效。留空 = 用内置默认（researcher/coder 走 Ollama，auditor 走云端）。',
+        peerDefaultOption: '— 用内置默认 —',
+        peerPickModel: '— 选模型 —',
         includeFullResult: '默认附完整 JSON 结果',
         envPassthrough: '透传环境变量（逗号分隔）',
         pathsHint: '路径支持 ~；留空使用默认值（$DSH_ETO_REPO 或 ~/src/eto）。',
@@ -175,6 +177,8 @@ window.__ModuleLoader__.load({
         peerConfigHint: 'The three peers must be different architectures, otherwise voting degrades to single-model self-consistency. provider: ollama (direct HTTP) or dsh (via host llm service; model = provider/model).',
         peerArchWarn: '⚠ At least two peers should use different architectures. All-same = single-model self-evaluation, fusion is meaningless.',
         peerConfigSaveHint: 'Saved into ~/.pi/eto-config.json, effective on the next consultation. Empty = built-in defaults.',
+        peerDefaultOption: '— built-in default —',
+        peerPickModel: '— pick a model —',
         includeFullResult: 'Always append the full JSON result',
         envPassthrough: 'Pass-through env names (comma separated)',
         pathsHint: 'Paths accept ~; empty means the default ($DSH_ETO_REPO or ~/src/eto).',
@@ -682,6 +686,52 @@ window.__ModuleLoader__.load({
       const [state, setState] = React.useState('idle')
       const [message, setMessage] = React.useState(null)
       const [test, setTest] = React.useState(null)
+      const [catalog, setCatalog] = React.useState(null)
+      React.useEffect(() => {
+        let alive = true
+        ;(async () => {
+          try {
+            const res = await fetch(API + '/catalog', { headers: HEADERS, cache: 'no-store' })
+            const body = res.ok ? await res.json() : null
+            if (alive) setCatalog((body && body.providers) || [])
+          } catch { if (alive) setCatalog([]) }
+        })()
+        return () => { alive = false }
+      }, [])
+
+      /** Read one role out of the stored peer JSON, tolerating anything malformed. */
+      const peerOf = (json, role) => {
+        try {
+          const parsed = JSON.parse(json || '{}')
+          const entry = parsed && parsed[role]
+          return entry && typeof entry === 'object' ? entry : {}
+        } catch { return {} }
+      }
+
+      /** Models the editor may offer for one provider (ollama's list is discovered, not static). */
+      const candidateModels = (providerId, group, all) => {
+        if (providerId === '') return []
+        if (group) return (group.models || []).map(m => m.id)
+        return []
+      }
+
+      /** Write one role back, translating the editor's vocabulary into vote.py's shape. */
+      const writePeer = (role, providerId, modelId, draftNow, setField, host) => {
+        const cfg = (() => {
+          try { return JSON.parse(draftNow.peerConfigJson || '{}') } catch { return {} }
+        })()
+        const prev = cfg[role] || {}
+        if (providerId === '') {
+          delete cfg[role]
+        } else if (providerId === 'ollama') {
+          // Two Ollama entries share the id `ollama`; the host is what tells them apart.
+          cfg[role] = { provider: 'ollama', model: modelId, ...(host ? { host } : (prev.host ? { host: prev.host } : {})) }
+        } else {
+          // A DSH provider is one route in vote.py: `dsh` + "provider/model".
+          cfg[role] = { provider: 'dsh', model: modelId === '' ? '' : `${providerId}/${modelId}` }
+        }
+        setField('peerConfigJson')(JSON.stringify(cfg, null, 2))
+      }
       const [testing, setTesting] = React.useState(false)
 
       const value = snapshot && snapshot.value ? snapshot.value : null
@@ -697,7 +747,7 @@ window.__ModuleLoader__.load({
         setMessage(null)
         try {
           const ops = []
-          const scalar = ['repo', 'venv', 'python', 'peerScoreProvider', 'peerScoreModel', 'toolTimeoutMs', 'peerScoreTimeoutMs', 'delegateModel', 'peerConfigJson']
+          const scalar = ['repo', 'venv', 'python', 'peerScoreProvider', 'peerScoreModel', 'toolTimeoutMs', 'peerScoreTimeoutMs', 'delegateModel', 'peerConfigJson', 'ollamaRemote']
           for (const key of scalar) {
             const next = draft[key]
             const before = value ? value[key] : undefined
@@ -816,38 +866,55 @@ window.__ModuleLoader__.load({
             h(Field, { label: t.delegateModel }, h(Input, { value: draft.delegateModel, onChange: set('delegateModel'), placeholder: 'deepseek-official/deepseek-flash' })),
             h('div', { style: { ...styles.muted } }, t.delegateHint),
             h('div', { style: { height: '14px' } }),
+            h(Field, { label: 'Ollama 远端地址' }, h(Input, {
+              value: draft.ollamaRemote || '',
+              onChange: set('ollamaRemote'),
+              placeholder: 'http://192.168.10.4:11434（留空 = 只用本机）',
+            })),
             h('div', { style: { ...styles.cardTitle, marginTop: '6px' } }, t.peerConfigTitle),
             h('div', { style: { ...styles.muted, marginBottom: '8px' } }, t.peerConfigHint),
             ['researcher', 'coder', 'auditor'].map((role) => {
-              const stored = (() => {
-                try {
-                  const parsed = JSON.parse(draft.peerConfigJson || '{}')
-                  return parsed[role] || {}
-                } catch { return {} }
-              })()
+              const stored = peerOf(draft.peerConfigJson, role)
+              // Stored shape is what vote.py consumes (`dsh` + "provider/model", or `ollama` + model).
+              // The editor shows the operator's vocabulary instead: the real provider and its models.
+              const shownProvider = stored.provider === 'dsh' && typeof stored.model === 'string' && stored.model.includes('/')
+                ? stored.model.slice(0, stored.model.indexOf('/'))
+                : (stored.provider || '')
+              const shownModel = stored.provider === 'dsh' && typeof stored.model === 'string' && stored.model.includes('/')
+                ? stored.model.slice(stored.model.indexOf('/') + 1)
+                : (stored.model || '')
+              const shownProviderValue = stored.provider === 'ollama'
+                ? `ollama|${stored.host || ((catalog || []).find(g => g.isOllama && String(g.host || '').includes('127.0.0.1')) || {}).host || ''}`
+                : (stored.provider === 'dsh' ? shownProvider : '')
+              const group = (catalog || []).find(g => g.id === shownProvider && (!stored.host || g.host === stored.host))
+              const models = candidateModels(shownProvider, group, catalog)
               return h('div', { key: role, style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap' } },
-                h('span', { style: { ...styles.muted, width: '86px', fontSize: '12px', fontWeight: 600 } }, role),
+                h('span', { style: { ...styles.muted, width: '80px', fontSize: '12px', fontWeight: 600 } }, role),
                 h('select', {
-                  value: stored.provider || '',
+                  value: shownProviderValue,
                   onChange: (ev) => {
-                    const cfg = (() => { try { return JSON.parse(draft.peerConfigJson || '{}') } catch { return {} } })()
-                    cfg[role] = { ...(cfg[role] || {}), provider: ev.target.value, model: (cfg[role] || {}).model || '' }
-                    set('peerConfigJson')(JSON.stringify(cfg, null, 2))
+                    const raw = String(ev.target.value || '')
+                    if (raw.startsWith('ollama|')) writePeer(role, 'ollama', '', draft, set, raw.slice('ollama|'.length))
+                    else writePeer(role, raw, '', draft, set)
                   },
-                  style: { ...styles.input, width: '150px' },
+                  style: { ...styles.input, width: '170px' },
                 },
-                  h('option', { value: '' }, '— 默认 —'),
-                  ['ollama', 'dsh'].map(pid => h('option', { value: pid }, pid))),
-                h(Input, {
-                  value: stored.model || '',
-                  onChange: (ev) => {
-                    const cfg = (() => { try { return JSON.parse(draft.peerConfigJson || '{}') } catch { return {} } })()
-                    cfg[role] = { ...(cfg[role] || {}), provider: stored.provider || 'ollama', model: ev.target.value }
-                    set('peerConfigJson')(JSON.stringify(cfg, null, 2))
-                  },
-                  placeholder: role === 'auditor' ? 'deepseek-official/deepseek-flash' : 'gemma3:4b',
-                  style: { flex: '1', minWidth: '180px' },
-                }))
+                  h('option', { value: '' }, t.peerDefaultOption),
+                  (catalog || []).map((g, gi) => h('option', {
+                    key: `${g.id}-${gi}`,
+                    // Ollama entries share the id; the host is what distinguishes local from LAN.
+                    value: g.isOllama ? `ollama|${g.host || ''}` : g.id,
+                  }, g.name || g.id))),
+                h('select', {
+                  value: shownModel,
+                  onChange: (ev) => writePeer(role, shownProvider, ev.target.value, draft, set),
+                  style: { ...styles.input, flex: '1', minWidth: '190px' },
+                },
+                  h('option', { value: '' }, t.peerPickModel),
+                  models.filter(id => id !== '').map(id => h('option', { key: id, value: id }, id)),
+                  shownModel !== '' && !models.includes(shownModel)
+                    ? h('option', { value: shownModel }, shownModel + '  (当前值)')
+                    : null))
             }),
             h('div', { style: { ...styles.warn, fontSize: '11px' } }, t.peerArchWarn),
             h('div', { style: { ...styles.muted, fontSize: '11px' } }, t.peerConfigSaveHint),
