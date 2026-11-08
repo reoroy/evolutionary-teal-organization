@@ -494,7 +494,11 @@ export function apply(ctx, entryConfig) {
               for (const provider of llm.listProviders()) {
                 const entry = { id: provider.id, name: provider.name ?? provider.id, models: [] }
                 try {
-                  entry.models = (llm.listModels(provider.id) || []).map(m => ({ id: m.id, name: m.name ?? m.id }))
+                  // listModels is ASYNC in the DSH llm contract (modelAvailable awaits it).
+                  // Calling it without await yields a Promise; mapping over it throws and the
+                  // catch below silently turns every provider into an empty model list — which is
+                  // exactly why the editor's model dropdown was always blank.
+                  entry.models = (await llm.listModels(provider.id) || []).map(m => ({ id: m.id, name: m.name ?? m.id }))
                 } catch { /* a provider that cannot enumerate keeps its empty list */ }
                 providers.push(entry)
               }
