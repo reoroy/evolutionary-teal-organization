@@ -349,10 +349,15 @@ export class EtoAdapter extends LlmAdapter {
             pending.push(chunk)
             if (chunk?.type === 'text-delta' && String(chunk.text ?? '').trim() !== '') {
               committed = true
-              if (failures.length > 0) {
-                yield { type: 'text-delta', index: 0, text: `（${failures.length} 个委托模型不可用，已回落到 ${route.provider}/${route.model}）\n` }
+              // The notice is folded into the FIRST text delta rather than emitted as a bare
+              // delta: a text-delta that arrives before the block envelope is opened is dropped
+              // by the harness, which is why the fallback ran but never showed up in the reply.
+              const notice = failures.length > 0
+                ? `（${failures.length} 个委托模型不可用，已回落到 ${route.provider}/${route.model}）\n\n`
+                : ''
+              for (const held of pending) {
+                yield (held === chunk && notice !== '') ? { ...held, text: notice + held.text } : held
               }
-              for (const held of pending) yield held
               pending.length = 0
             }
           } else {
@@ -366,8 +371,16 @@ export class EtoAdapter extends LlmAdapter {
       // The fallback is invisible otherwise, and "the answer came back" does not prove which
       // model produced it — that ambiguity is what made a silent single-model ETO look healthy.
       if (process.env.ETO_DEBUG_DELEGATE === '1') {
-        console.error('[dsh-eto][delegate]', route.provider + '/' + route.model,
-          'committed=' + committed, 'pending=' + pending.length, 'failed=' + JSON.stringify(failed))
+        const line = `[dsh-eto][delegate] ${route.provider}/${route.model} committed=${committed} pending=${pending.length} failed=${JSON.stringify(failed)}`
+        console.error(line)
+        // stderr from the GUI app does not reach a file, so the trace also lands where the rest of
+        // ETO's state lives. Without this the fallback stays invisible in normal operation.
+        try {
+          const { appendFileSync } = await import('node:fs')
+          const { homedir } = await import('node:os')
+          const { join } = await import('node:path')
+          appendFileSync(join(homedir(), '.eto', 'delegate-trace.log'), `${new Date().toISOString()} ${line}\n`)
+        } catch { /* the trace must never break the turn */ }
       }
       if (committed || failed === null) {
         // Committed content (or a clean empty stop) is this route's answer; flush whatever is left.
