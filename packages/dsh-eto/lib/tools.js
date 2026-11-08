@@ -161,7 +161,13 @@ export function createTools({ ctx, settings }) {
   const setDshEndpoint = url => { if (url) dshEndpoint = url }
   /** Env for a spawned ETO call that may reach back into the host's /llm endpoint. */
   const consensusEnv = () => {
-    const base = childEnv(settings(), process.env)
+    const snapshot = settings()
+    const base = childEnv(snapshot, process.env)
+    // The peers travel as ONE structured JSON env var, produced by the settings schema rather
+    // than by a hand-maintained file: whatever the panel saved is exactly what vote.py receives.
+    const peers = Array.isArray(snapshot.peers) ? snapshot.peers : []
+    if (peers.length > 0) base.ETO_PEERS_JSON = JSON.stringify(peers)
+    if (snapshot.ollamaRemote) base.ETO_OLLAMA_REMOTE = snapshot.ollamaRemote
     return dshEndpoint ? { ...base, ETO_DSH_ENDPOINT: dshEndpoint } : base
   }
   const api = { setDshEndpoint, consensusEnv }

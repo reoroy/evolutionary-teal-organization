@@ -34,12 +34,23 @@ export const Config = z.object({
   /** `provider/model` route the direct-answer delegate uses (routing gate A). */
   delegateModel: z.string().default('deepseek-official/deepseek-flash').volatile(),
   /**
-   * The three consultation peers as JSON, keyed by role. Empty = vote.py's built-in defaults.
-   * Shape: { researcher: {provider, model, host?, think?}, coder: {...}, auditor: {...} }
-   * `provider` is `ollama` (direct HTTP, honours `host`) or `dsh` (via the host llm service,
-   * model is `provider/model`). Written through by the panel into ~/.pi/eto-config.json.
+   * Consultation peers as a STRUCTURED array, not a JSON string.
+   *
+   * dsh-moa does it this way (§ PresetSchema) and it is the reason its settings stick: a real
+   * schema means the host's configForms owns the value end to end — it round-trips through the
+   * snapshot, validates it, and the panel reads back exactly what was written. A JSON blob in a
+   * `z.string()` only round-trips if every reader remembers to parse it, and it does not survive
+   * the settings pipeline, which is why a hand-rolled version kept snapping back to defaults.
+   *
+   * `provider` is `ollama` (direct HTTP, honours `host`) or `dsh` (host llm service, model is
+   * `provider/model`). An empty `model` means "use the built-in default for this role".
    */
-  peerConfigJson: z.string().default('').volatile(),
+  peers: z.array(z.object({
+    role: z.string().default(''),
+    provider: z.string().default(''),
+    model: z.string().default(''),
+    host: z.string().default(''),
+  })).default([]).volatile(),
   /** LAN Ollama base URL (e.g. http://192.168.10.4:11434); empty = the local daemon only. */
   ollamaRemote: z.string().default('').volatile(),
   /** Always append the full consensus JSON to the fused reply (else only on request). */
@@ -85,6 +96,31 @@ const pythonIn = venv => (process.platform === 'win32' ? join(venv, 'Scripts', '
  * @param {{ home?: string }} [options] - test seam for the home directory.
  * @returns resolved settings plus the effective ETO layout.
  */
+
+/** Roles the consultation understands, in prompt order. */
+export const PEER_ROLES = ['researcher', 'coder', 'auditor']
+
+/**
+ * Clean a `peers` array from settings. Unknown roles and blank entries are dropped so a stale
+ * saved value cannot inject a peer that vote.py would never call.
+ */
+export function normalizePeers(candidate) {
+  if (!Array.isArray(candidate)) return []
+  const out = []
+  const seen = new Set()
+  for (const entry of candidate) {
+    if (!entry || typeof entry !== 'object') continue
+    const role = String(entry.role ?? '').trim()
+    if (!PEER_ROLES.includes(role) || seen.has(role)) continue
+    const provider = String(entry.provider ?? '').trim()
+    const model = String(entry.model ?? '').trim()
+    if (provider === '' || model === '') continue
+    seen.add(role)
+    out.push({ role, provider, model, host: String(entry.host ?? '').trim() })
+  }
+  return out
+}
+
 export function resolveSettings(raw, options = {}) {
   const value = raw && typeof raw === 'object' ? raw : {}
   const home = options.home ?? homedir()
@@ -121,7 +157,7 @@ export function resolveSettings(raw, options = {}) {
     delegateModel: str(value.delegateModel, 'deepseek-official/deepseek-flash'),
     // Both are volatile settings. Without them here, a saved value is dropped on resolve and
     // the panel reads back the empty default — the "selection doesn't stick" symptom.
-    peerConfigJson: str(value.peerConfigJson, ''),
+    peers: normalizePeers(value.peers),
     ollamaRemote: str(value.ollamaRemote, ''),
     includeFullResult: bool(value.includeFullResult, false),
     envPassthrough: list(value.envPassthrough),
@@ -142,7 +178,7 @@ export function settingsView(settings) {
     delegateModel: settings.delegateModel,
     // These two must appear in the view or the configForms snapshot never carries them:
     // the settings page then drafts them as undefined and every peer choice snaps back to default.
-    peerConfigJson: settings.peerConfigJson,
+    peers: settings.peers,
     ollamaRemote: settings.ollamaRemote,
     includeFullResult: settings.includeFullResult,
     envPassthrough: settings.envPassthrough,

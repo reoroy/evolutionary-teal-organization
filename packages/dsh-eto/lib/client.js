@@ -699,15 +699,6 @@ window.__ModuleLoader__.load({
         return () => { alive = false }
       }, [])
 
-      /** Read one role out of the stored peer JSON, tolerating anything malformed. */
-      const peerOf = (json, role) => {
-        try {
-          const parsed = JSON.parse(json || '{}')
-          const entry = parsed && parsed[role]
-          return entry && typeof entry === 'object' ? entry : {}
-        } catch { return {} }
-      }
-
       /** Models the editor may offer for one provider (ollama's list is discovered, not static). */
       const candidateModels = (providerId, group, all) => {
         if (providerId === '') return []
@@ -715,23 +706,26 @@ window.__ModuleLoader__.load({
         return []
       }
 
-      /** Write one role back, translating the editor's vocabulary into vote.py's shape. */
-      const writePeer = (role, providerId, modelId, draftNow, setField, host) => {
-        const cfg = (() => {
-          try { return JSON.parse(draftNow.peerConfigJson || '{}') } catch { return {} }
-        })()
-        const prev = cfg[role] || {}
-        if (providerId === '') {
-          delete cfg[role]
-        } else if (providerId === 'ollama') {
-          // Two Ollama entries share the id `ollama`; the host is what tells them apart.
-          cfg[role] = { provider: 'ollama', model: modelId, ...(host ? { host } : (prev.host ? { host: prev.host } : {})) }
-        } else {
-          // A DSH provider is one route in vote.py: `dsh` + "provider/model".
-          cfg[role] = { provider: 'dsh', model: modelId === '' ? '' : `${providerId}/${modelId}` }
-        }
-        setField('peerConfigJson')(JSON.stringify(cfg, null, 2))
+      /** One peer from the structured settings array, or {} when the role is unset. */
+      const peerOf = (peers, role) => {
+        if (!Array.isArray(peers)) return {}
+        const hit = peers.find(e => e && e.role === role)
+        return hit && typeof hit === 'object' ? hit : {}
       }
+
+      /** Store one role back into the structured array, keeping the canonical role order. */
+      const writePeer = (role, next, draftNow, setField) => {
+        const current = Array.isArray(draftNow.peers) ? draftNow.peers : []
+        const rest = current.filter(e => e && e.role !== role)
+        const entry = { role, provider: '', model: '', host: '', ...next }
+        const merged = entry.provider === '' || entry.model === ''
+          ? rest
+          : [...rest, entry]
+        const order = ['researcher', 'coder', 'auditor']
+        merged.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role))
+        setField('peers')(merged)
+      }
+
       const [testing, setTesting] = React.useState(false)
 
       const value = snapshot && snapshot.value ? snapshot.value : null
@@ -744,8 +738,9 @@ window.__ModuleLoader__.load({
         if (value === null) return
         setDraft((current) => {
           const merged = { ...value, ...(current || {}) }
-          if (current && current.peerConfigJson && !value.peerConfigJson) {
-            merged.peerConfigJson = current.peerConfigJson
+          if (current && Array.isArray(current.peers) && current.peers.length > 0
+              && (!Array.isArray(value.peers) || value.peers.length === 0)) {
+            merged.peers = current.peers
           }
           return merged
         })
@@ -759,7 +754,7 @@ window.__ModuleLoader__.load({
         setMessage(null)
         try {
           const ops = []
-          const scalar = ['repo', 'venv', 'python', 'peerScoreProvider', 'peerScoreModel', 'toolTimeoutMs', 'peerScoreTimeoutMs', 'delegateModel', 'peerConfigJson', 'ollamaRemote']
+          const scalar = ['repo', 'venv', 'python', 'peerScoreProvider', 'peerScoreModel', 'toolTimeoutMs', 'peerScoreTimeoutMs', 'delegateModel', 'ollamaRemote']
           for (const key of scalar) {
             const next = draft[key]
             const before = value ? value[key] : undefined
@@ -777,31 +772,11 @@ window.__ModuleLoader__.load({
             const before = Boolean(value && value[key])
             if (next !== before) ops.push({ op: 'set', path: [key], value: next })
           }
-          // Peer configuration lives in ~/.pi/eto-config.json, not in DSH's volatile settings.
-          // Save it FIRST and independently: the host may not know a newly added volatile field,
-          // and form.mutate() may report an unrelated failure. A peer choice must never be lost
-          // just because the rest of the form had nothing to change.
-          const persistPeers = async () => {
-            const nextPeer = String(draft.peerConfigJson ?? '').trim()
-            if (nextPeer === '') return
-            let peers
-            try { peers = JSON.parse(nextPeer) } catch (e) { throw new Error('peer 配置不是合法 JSON：' + String(e)) }
-            const res = await fetch(API + '/peer-config', {
-              method: 'POST', headers: HEADERS, cache: 'no-store',
-              body: JSON.stringify({ peers }),
-            })
-            const body = await res.json().catch(() => ({}))
-            if (!res.ok || body.ok !== true) throw new Error(body.error || ('HTTP ' + res.status))
-          }
-          let peerError = null
-          try { await persistPeers() } catch (e) { peerError = e }
-          if (peerError !== null) {
-            // Still try the DSH settings; the peer failure is reported to the operator.
-            if (ops.length === 0) {
-              setState('failed')
-              setMessage('peer 配置未写入：' + (peerError instanceof Error ? peerError.message : String(peerError)))
-              return
-            }
+          // The peers are a structured settings field, so they travel with the form itself —
+          // the same shape dsh-moa uses for its presets. Nothing is mirrored to a side file:
+          // one owner, so the panel and the runtime cannot disagree.
+          if (JSON.stringify(draft.peers || []) !== JSON.stringify((value && value.peers) || [])) {
+            ops.push({ op: 'set', path: ['peers'], value: draft.peers || [] })
           }
 
           if (ops.length !== 0) {
@@ -894,7 +869,7 @@ window.__ModuleLoader__.load({
             h('div', { style: { ...styles.cardTitle, marginTop: '6px' } }, t.peerConfigTitle),
             h('div', { style: { ...styles.muted, marginBottom: '8px' } }, t.peerConfigHint),
             ['researcher', 'coder', 'auditor'].map((role) => {
-              const stored = peerOf(draft.peerConfigJson, role)
+              const stored = peerOf(draft.peers, role)
               // Derive the editor value from what is ACTUALLY stored, never from a cached render.
               // The stored shape is vote.py's: {provider:'dsh', model:'provider/model'} or
               // {provider:'ollama', model:'tag', host?}. The editor shows provider + model separately.
@@ -916,21 +891,22 @@ window.__ModuleLoader__.load({
                 return ids
               })()
 
+              // Selecting a provider keeps the model the operator already had for that provider,
+              // so switching provider does not blank the row and drop it from the saved array.
               const onProvider = (raw) => {
-                const cfg = (() => { try { return JSON.parse(draft.peerConfigJson || '{}') } catch { return {} } })()
-                if (raw === '') { delete cfg[role] }
-                else if (raw.startsWith('ollama|')) {
-                  cfg[role] = { provider: 'ollama', model: '', ...(raw.slice('ollama|'.length) ? { host: raw.slice('ollama|'.length) } : {}) }
+                if (raw === '') { writePeer(role, { provider: '', model: '' }, draft, set); return }
+                if (raw.startsWith('ollama|')) {
+                  const host = raw.slice('ollama|'.length)
+                  const keep = isOllama ? fullModel : ''
+                  writePeer(role, { provider: 'ollama', model: keep, host }, draft, set)
                 } else {
-                  cfg[role] = { provider: 'dsh', model: '' }
+                  const keep = isDsh && dshProvider === raw ? dshModel : ''
+                  writePeer(role, { provider: 'dsh', model: keep ? `${raw}/${keep}` : '', host: '' }, draft, set)
                 }
-                set('peerConfigJson')(JSON.stringify(cfg, null, 2))
               }
               const onModel = (modelId) => {
-                const cfg = (() => { try { return JSON.parse(draft.peerConfigJson || '{}') } catch { return {} } })()
-                if (isOllama) cfg[role] = { provider: 'ollama', model: modelId, ...(stored.host ? { host: stored.host } : {}) }
-                else cfg[role] = { provider: 'dsh', model: modelId ? `${dshProvider || providerKey}/${modelId}` : '' }
-                set('peerConfigJson')(JSON.stringify(cfg, null, 2))
+                if (isOllama) writePeer(role, { provider: 'ollama', model: modelId, host: stored.host || '' }, draft, set)
+                else writePeer(role, { provider: 'dsh', model: modelId ? `${dshProvider || providerKey}/${modelId}` : '', host: '' }, draft, set)
               }
               return h('div', { key: role, style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap' } },
                 h('span', { style: { ...styles.muted, width: '80px', fontSize: '12px', fontWeight: 600 } }, role),
