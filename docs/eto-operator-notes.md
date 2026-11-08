@@ -77,3 +77,42 @@ advice, disagreements, fusion, mode, risks, synthesis, status, votes
 要旧形状显式传 `mode="review"`。
 
 `lib/eto_runner.py:138` 是函数定义，`:152` 是 `mode = args.get("mode", "advise")`。
+
+## 计划中的推理源（2026-11-08 记录）
+
+操作者提到的三条线，按优先级：
+
+| 来源 | 状态 | 对本项目的价值 |
+|:--|:--|:--|
+| **硅基流动（SiliconFlow）** | 待充值 | 大量开源模型，便宜。**最适合补「异构融合」** —— Qwen / GLM / DeepSeek 各家都能拿到不同架构 |
+| **opencode-go** | 待有额度 | 已在 provider 列表里（`opencode`），额度到位即可直接用 |
+| **本机 2070 显卡** | 硬件已有 | **最缺的一块**：本机取之不尽、无额度限制、数据不出本机 |
+
+### 为什么本机 2070 最值得优先
+
+现在三源只剩一源（`qodercn/dfmodel`），异构融合已退化成单模型自评。
+而 `vote.py` 的 researcher 原本就走本机 Ollama —— 只要 Ollama 能跑起来，立刻恢复两源。
+
+**当前阻塞**：本机 `ollama/qwen3-8b-arb:latest` 返回 `stream error`，Ollama 服务本身可能没起或模型已卸载。
+
+排查：
+```bash
+curl -s http://localhost:11434/api/tags
+ollama ps
+```
+
+2070 是 8GB 显存：7B–8B q4 可跑（现在用的 `qwen3-8b-arb` 正好这个量级），14B 勉强，不适合 32B+。
+
+### 硅基流动接入要点
+
+1. 凭据写进 `~/.dsh/.credentials.yaml`
+2. `siliconflow` 需要新注册为 DSH provider（当前列表里没有）
+3. 接通判据：`POST /@dsh-eto/api/llm` 能出 `_text`
+
+**给 `vote.py` 选 peer 的原则**：三个 peer 必须**不同架构**（一个 Qwen、一个 GLM、一个 DeepSeek 系），
+同架构不同尺寸不算异构 —— 依据见 `docs/eto-work-usable-2026-11.md`。
+
+### opencode-go 注意
+
+`opencode` 已在 provider 列表里。但要确认它有没有**不同架构**的模型
+（若全是 DeepSeek 系，对异构融合没有帮助）。
