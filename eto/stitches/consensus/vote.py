@@ -54,17 +54,58 @@ DEFAULT_PEER_CONFIG = {
 _PEER_CONFIG_CACHE = None
 
 def _load_peer_config() -> dict:
-    """从 ~/.pi/eto-config.json 读取 peer provider 映射"""
+    """Resolve the peer table.
+
+    Priority (highest first):
+      1. ETO_PEERS_JSON — written by the DSH plugin from its structured settings schema. This is
+         the value the panel actually edits, so it must win over anything on disk.
+      2. ~/.pi/eto-config.json — legacy hand-edited file, kept working for CLI use.
+      3. DEFAULT_PEER_CONFIG — built-in fallbacks.
+
+    The env-var path exists because a JSON blob in a settings string could not round-trip through
+    the host's config pipeline; a structured schema can, and it hands the value over as this var.
+    """
     global _PEER_CONFIG_CACHE
     if _PEER_CONFIG_CACHE is not None:
         return _PEER_CONFIG_CACHE
+
+    merged = dict(DEFAULT_PEER_CONFIG)
     path = os.path.expanduser("~/.pi/eto-config.json")
     try:
         with open(path, encoding="utf-8") as f:
-            cfg = json.load(f)
-        _PEER_CONFIG_CACHE = {**DEFAULT_PEER_CONFIG, **cfg.get("peers", {})}
-    except:
-        _PEER_CONFIG_CACHE = dict(DEFAULT_PEER_CONFIG)
+            merged = {**merged, **(json.load(f).get("peers") or {})}
+    except Exception:
+        pass
+
+    raw = os.environ.get("ETO_PEERS_JSON", "").strip()
+    if raw:
+        try:
+            entries = json.loads(raw)
+            if isinstance(entries, list):
+                from_env = {}
+                for e in entries:
+                    if not isinstance(e, dict):
+                        continue
+                    role = str(e.get("role") or "").strip()
+                    provider = str(e.get("provider") or "").strip()
+                    model = str(e.get("model") or "").strip()
+                    if role == "" or provider == "" or model == "":
+                        continue
+                    slot = {"provider": provider, "model": model}
+                    if e.get("host"):
+                        slot["host"] = str(e["host"]).strip()
+                    from_env[role] = slot
+                if from_env:
+                    merged = {**merged, **from_env}
+                    # The arbiter follows the auditor unless the operator set one explicitly:
+                    # without this the synthesis call would keep using the built-in default while
+                    # the three peers visibly run on the configured models.
+                    if "终审仲裁者" not in from_env and "auditor" in from_env:
+                        merged["终审仲裁者"] = dict(from_env["auditor"])
+        except (ValueError, TypeError):
+            logger.warning("ETO_PEERS_JSON 无法解析，忽略并使用文件/默认配置")
+
+    _PEER_CONFIG_CACHE = merged
     return _PEER_CONFIG_CACHE
 
 #: Marker prefix for a provider failure that must travel as data, not as an empty string.
