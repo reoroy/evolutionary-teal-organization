@@ -735,8 +735,20 @@ window.__ModuleLoader__.load({
       const [testing, setTesting] = React.useState(false)
 
       const value = snapshot && snapshot.value ? snapshot.value : null
+      // The host may not echo a newly added volatile field back right away. If we blindly replace
+      // the draft on every snapshot change, an unsaved (or just-saved) peer choice vanishes and
+      // the editor falls back to "default" — exactly the reported symptom. Keep the operator's
+      // edits by merging on top of the server value, and never clobber a non-empty peer JSON with
+      // a missing/empty one.
       React.useEffect(() => {
-        if (value !== null) setDraft({ ...value })
+        if (value === null) return
+        setDraft((current) => {
+          const merged = { ...value, ...(current || {}) }
+          if (current && current.peerConfigJson && !value.peerConfigJson) {
+            merged.peerConfigJson = current.peerConfigJson
+          }
+          return merged
+        })
       }, [value && JSON.stringify(value)])
 
       const set = (key) => (next) => setDraft((current) => ({ ...(current || {}), [key]: next }))
@@ -765,31 +777,39 @@ window.__ModuleLoader__.load({
             const before = Boolean(value && value[key])
             if (next !== before) ops.push({ op: 'set', path: [key], value: next })
           }
-          if (ops.length === 0) {
-            setState('idle')
-            return
-          }
-          const accepted = await form.mutate(ops)
-          if (!accepted) { setState('failed'); setMessage(t.saveFailed); return }
-
-          // The consultation peers are not volatile DSH settings — vote.py reads them from
-          // ~/.pi/eto-config.json. Mirror the JSON there whenever it changed, then the next
-          // consultation picks it up without a restart (runner is spawned fresh each time).
-          try {
+          // Peer configuration lives in ~/.pi/eto-config.json, not in DSH's volatile settings.
+          // Save it FIRST and independently: the host may not know a newly added volatile field,
+          // and form.mutate() may report an unrelated failure. A peer choice must never be lost
+          // just because the rest of the form had nothing to change.
+          const persistPeers = async () => {
             const nextPeer = String(draft.peerConfigJson ?? '').trim()
-            const beforePeer = JSON.stringify(JSON.parse(value ? (value.peerConfigJson ?? '{}') : '{}'))
-            if (nextPeer !== beforePeer && nextPeer !== '') {
-              JSON.parse(nextPeer) // must be valid JSON before we commit it to disk
-              await fetch(API + '/peer-config', {
-                method: 'POST', headers: HEADERS, cache: 'no-store',
-                body: JSON.stringify({ peers: JSON.parse(nextPeer) }),
-              })
+            if (nextPeer === '') return
+            let peers
+            try { peers = JSON.parse(nextPeer) } catch (e) { throw new Error('peer 配置不是合法 JSON：' + String(e)) }
+            const res = await fetch(API + '/peer-config', {
+              method: 'POST', headers: HEADERS, cache: 'no-store',
+              body: JSON.stringify({ peers }),
+            })
+            const body = await res.json().catch(() => ({}))
+            if (!res.ok || body.ok !== true) throw new Error(body.error || ('HTTP ' + res.status))
+          }
+          let peerError = null
+          try { await persistPeers() } catch (e) { peerError = e }
+          if (peerError !== null) {
+            // Still try the DSH settings; the peer failure is reported to the operator.
+            if (ops.length === 0) {
+              setState('failed')
+              setMessage('peer 配置未写入：' + (peerError instanceof Error ? peerError.message : String(peerError)))
+              return
             }
-          } catch (peerError) {
-            setMessage('peer 配置未写入：' + (peerError instanceof Error ? peerError.message : String(peerError)))
           }
 
+          if (ops.length !== 0) {
+            const accepted = await form.mutate(ops)
+            if (!accepted) { setState('failed'); setMessage(t.saveFailed); return }
+          }
           setState('saved')
+          setMessage(peerError === null ? null : ('peer 配置未写入：' + (peerError instanceof Error ? peerError.message : String(peerError))))
         } catch (reason) {
           setState('failed')
           setMessage(reason instanceof Error ? reason.message : String(reason))
@@ -875,39 +895,58 @@ window.__ModuleLoader__.load({
             h('div', { style: { ...styles.muted, marginBottom: '8px' } }, t.peerConfigHint),
             ['researcher', 'coder', 'auditor'].map((role) => {
               const stored = peerOf(draft.peerConfigJson, role)
-              // Stored shape is what vote.py consumes (`dsh` + "provider/model", or `ollama` + model).
-              // The editor shows the operator's vocabulary instead: the real provider and its models.
-              const shownProvider = stored.provider === 'dsh' && typeof stored.model === 'string' && stored.model.includes('/')
-                ? stored.model.slice(0, stored.model.indexOf('/'))
-                : (stored.provider || '')
-              const shownModel = stored.provider === 'dsh' && typeof stored.model === 'string' && stored.model.includes('/')
-                ? stored.model.slice(stored.model.indexOf('/') + 1)
-                : (stored.model || '')
-              const shownProviderValue = stored.provider === 'ollama'
-                ? `ollama|${stored.host || ((catalog || []).find(g => g.isOllama && String(g.host || '').includes('127.0.0.1')) || {}).host || ''}`
-                : (stored.provider === 'dsh' ? shownProvider : '')
-              const group = (catalog || []).find(g => g.id === shownProvider && (!stored.host || g.host === stored.host))
-              const models = candidateModels(shownProvider, group, catalog)
+              // Derive the editor value from what is ACTUALLY stored, never from a cached render.
+              // The stored shape is vote.py's: {provider:'dsh', model:'provider/model'} or
+              // {provider:'ollama', model:'tag', host?}. The editor shows provider + model separately.
+              const isDsh = stored.provider === 'dsh'
+              const fullModel = typeof stored.model === 'string' ? stored.model : ''
+              const slash = fullModel.indexOf('/')
+              const dshProvider = isDsh && slash > 0 ? fullModel.slice(0, slash) : ''
+              const dshModel = isDsh && slash > 0 ? fullModel.slice(slash + 1) : (isDsh ? fullModel : '')
+              const isOllama = stored.provider === 'ollama'
+              const ollamaKey = isOllama ? `ollama|${stored.host || ''}` : ''
+              const providerKey = isDsh ? dshProvider : ollamaKey
+              const shownModel = isDsh ? dshModel : (isOllama ? fullModel : '')
+              const group = (catalog || []).find(g => g.id === providerKey || (isDsh && g.id === dshProvider) || (isOllama && g.isOllama && (g.host || '') === (stored.host || '')))
+              const models = (() => {
+                const found = (catalog || []).filter(g =>
+                  (isDsh && g.id === dshProvider) || (isOllama && g.isOllama && (g.host || '') === (stored.host || '')))
+                const ids = []
+                for (const g of found) for (const m of (g.models || [])) if (!ids.includes(m.id)) ids.push(m.id)
+                return ids
+              })()
+
+              const onProvider = (raw) => {
+                const cfg = (() => { try { return JSON.parse(draft.peerConfigJson || '{}') } catch { return {} } })()
+                if (raw === '') { delete cfg[role] }
+                else if (raw.startsWith('ollama|')) {
+                  cfg[role] = { provider: 'ollama', model: '', ...(raw.slice('ollama|'.length) ? { host: raw.slice('ollama|'.length) } : {}) }
+                } else {
+                  cfg[role] = { provider: 'dsh', model: '' }
+                }
+                set('peerConfigJson')(JSON.stringify(cfg, null, 2))
+              }
+              const onModel = (modelId) => {
+                const cfg = (() => { try { return JSON.parse(draft.peerConfigJson || '{}') } catch { return {} } })()
+                if (isOllama) cfg[role] = { provider: 'ollama', model: modelId, ...(stored.host ? { host: stored.host } : {}) }
+                else cfg[role] = { provider: 'dsh', model: modelId ? `${dshProvider || providerKey}/${modelId}` : '' }
+                set('peerConfigJson')(JSON.stringify(cfg, null, 2))
+              }
               return h('div', { key: role, style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap' } },
                 h('span', { style: { ...styles.muted, width: '80px', fontSize: '12px', fontWeight: 600 } }, role),
                 h('select', {
-                  value: shownProviderValue,
-                  onChange: (ev) => {
-                    const raw = String(ev.target.value || '')
-                    if (raw.startsWith('ollama|')) writePeer(role, 'ollama', '', draft, set, raw.slice('ollama|'.length))
-                    else writePeer(role, raw, '', draft, set)
-                  },
+                  value: providerKey,
+                  onChange: (ev) => onProvider(String(ev.target.value || '')),
                   style: { ...styles.input, width: '170px' },
                 },
                   h('option', { value: '' }, t.peerDefaultOption),
                   (catalog || []).map((g, gi) => h('option', {
                     key: `${g.id}-${gi}`,
-                    // Ollama entries share the id; the host is what distinguishes local from LAN.
                     value: g.isOllama ? `ollama|${g.host || ''}` : g.id,
                   }, g.name || g.id))),
                 h('select', {
                   value: shownModel,
-                  onChange: (ev) => writePeer(role, shownProvider, ev.target.value, draft, set),
+                  onChange: (ev) => onModel(String(ev.target.value || '')),
                   style: { ...styles.input, flex: '1', minWidth: '190px' },
                 },
                   h('option', { value: '' }, t.peerPickModel),
