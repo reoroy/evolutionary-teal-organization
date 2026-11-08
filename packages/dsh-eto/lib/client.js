@@ -718,9 +718,9 @@ window.__ModuleLoader__.load({
         const current = Array.isArray(draftNow.peers) ? draftNow.peers : []
         const rest = current.filter(e => e && e.role !== role)
         const entry = { role, provider: '', model: '', host: '', ...next }
-        const merged = entry.provider === '' || entry.model === ''
-          ? rest
-          : [...rest, entry]
+        // Keep a half-filled row (provider picked, model not yet). Dropping it here is what made
+        // the selection visibly revert to "built-in default" the moment a provider was chosen.
+        const merged = entry.provider === '' ? rest : [...rest, entry]
         const order = ['researcher', 'coder', 'auditor']
         merged.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role))
         setField('peers')(merged)
@@ -898,10 +898,16 @@ window.__ModuleLoader__.load({
                 if (raw.startsWith('ollama|')) {
                   const host = raw.slice('ollama|'.length)
                   const keep = isOllama ? fullModel : ''
-                  writePeer(role, { provider: 'ollama', model: keep, host }, draft, set)
+                  const grp = (catalog || []).find(g => g.isOllama && (g.host || '') === host)
+                  const fallback = (grp && grp.models && grp.models[0] && grp.models[0].id) || ''
+                  writePeer(role, { provider: 'ollama', model: keep || fallback, host }, draft, set)
                 } else {
+                  // Auto-pick the provider's first model so choosing a provider never leaves the
+                  // row blank — that blank state was the whole "reverts to default" symptom.
                   const keep = isDsh && dshProvider === raw ? dshModel : ''
-                  writePeer(role, { provider: 'dsh', model: keep ? `${raw}/${keep}` : '', host: '' }, draft, set)
+                  const grp = (catalog || []).find(g => g.id === raw)
+                  const fallback = (grp && grp.models && grp.models[0] && grp.models[0].id) || ''
+                  writePeer(role, { provider: 'dsh', model: `${raw}/${keep || fallback}`, host: '' }, draft, set)
                 }
               }
               const onModel = (modelId) => {
