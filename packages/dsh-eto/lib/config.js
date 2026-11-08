@@ -40,6 +40,8 @@ export const Config = z.object({
    * model is `provider/model`). Written through by the panel into ~/.pi/eto-config.json.
    */
   peerConfigJson: z.string().default('').volatile(),
+  /** LAN Ollama base URL (e.g. http://192.168.10.4:11434); empty = the local daemon only. */
+  ollamaRemote: z.string().default('').volatile(),
   /** Always append the full consensus JSON to the fused reply (else only on request). */
   includeFullResult: z.boolean().default(false).volatile(),
   /** Environment names forwarded to the child, beyond the non-secret baseline. */

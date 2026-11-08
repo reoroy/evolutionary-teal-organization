@@ -212,6 +212,8 @@ export function apply(ctx, entryConfig) {
   const registered = () => [...live.keys()]
   // Virtual-provider routes this plugin registered on the llm service (just `eto`).
   const etoProviderRegistered = { value: false }
+  /** Latest llm service handle; null until the host composes one. */
+  const llmRef = { current: null }
   const providers = () => (etoProviderRegistered.value ? [ETO_PROVIDER] : [])
   const probe = createStatusProbe(settingsRef, { pluginTools, registered, providers })
 
@@ -229,6 +231,10 @@ export function apply(ctx, entryConfig) {
   // duplicate route) must not take the session down.
   ctx.inject(['llm'], llmCtx => {
     const llm = llmCtx.llm
+    // The panel's peer editor needs the real provider/model catalogue — the DSH llm service is the
+    // only place that knows which providers are routable right now. Kept in a ref so the settings
+    // route can answer even before the adapter registration succeeds.
+    llmRef.current = llm && typeof llm.listProviders === 'function' ? llm : null
     if (llm === undefined || typeof llm.registerAdapter !== 'function') return
     try {
       llm.registerAdapter([ETO_PROVIDER], new EtoAdapter({
@@ -470,6 +476,54 @@ export function apply(ctx, entryConfig) {
           // first; the detail route answers by the record's own ledger id.
           if (sub === '/reviews' && req.method === 'GET') {
             json(res, 200, { reviews: listReviews() })
+            return
+          }
+
+          if (sub === '/catalog' && req.method === 'GET') {
+            // The peer editor needs provider → model cascades. Ask the host llm service rather than
+            // hardcoding names: which providers are routable depends on the operator's credentials,
+            // and a stale list silently sends a peer to a model that no longer exists.
+            const llm = llmRef.current
+            if (llm === null) {
+              json(res, 200, { providers: [], note: 'the host composes no llm service' })
+              return
+            }
+            try {
+              const providers = []
+              for (const provider of llm.listProviders()) {
+                const entry = { id: provider.id, name: provider.name ?? provider.id, models: [] }
+                try {
+                  entry.models = (llm.listModels(provider.id) || []).map(m => ({ id: m.id, name: m.name ?? m.id }))
+                } catch { /* a provider that cannot enumerate keeps its empty list */ }
+                providers.push(entry)
+              }
+              // Ollama is not a DSH provider: vote.py talks to it over HTTP directly. Probe the
+              // local daemon and the optional LAN host so the editor can offer their real models
+              // instead of asking the operator to type a tag from memory.
+              const ollamaHosts = [
+                { id: 'ollama', name: 'Ollama (local)', host: 'http://127.0.0.1:11434' },
+              ]
+              const remote = (settingsRef() && settingsRef().ollamaRemote) || process.env.ETO_OLLAMA_REMOTE || ''
+              if (remote.trim() !== '') ollamaHosts.push({ id: 'ollama', name: `Ollama (${remote.replace(/^https?:\/\//, '')})`, host: remote.trim() })
+              for (const entry of ollamaHosts) {
+                const models = []
+                try {
+                  const controller = new AbortController()
+                  const timer = setTimeout(() => controller.abort(), 1_500)
+                  timer.unref?.()
+                  const r = await fetch(`${entry.host.replace(/\/$/, '')}/api/tags`, { signal: controller.signal })
+                  clearTimeout(timer)
+                  if (r.ok) {
+                    const body = await r.json()
+                    for (const m of (body.models || [])) if (m && m.name) models.push({ id: m.name, name: m.name })
+                  }
+                } catch { /* daemon not running is normal */ }
+                providers.push({ id: entry.id, name: entry.name, models, host: entry.host, isOllama: true })
+              }
+              json(res, 200, { providers })
+            } catch (error) {
+              json(res, 502, { _error: true, error: error instanceof Error ? error.message : String(error) })
+            }
             return
           }
 
