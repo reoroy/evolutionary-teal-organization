@@ -74,7 +74,11 @@ window.__ModuleLoader__.load({
         model: 'model',
         peerScoreTimeout: '评分超时（毫秒）',
         delegateModel: '直答委托模型',
-        delegateHint: '普通问题路由为 direct 时，用这个 provider/model 直接回答（默认 deepseek-official/deepseek-flash）。',
+        delegateHint: '普通问题路由为 direct 时，用这个 provider/model 直接回答（支持逗号分隔的回落链）。',
+        peerConfigTitle: '会诊三源 peer（异构融合）',
+        peerConfigHint: '三个 peer 必须是不同架构，否则投票退化为单模型自一致性。provider 选 ollama（直连 HTTP）或 dsh（走宿主 llm 服务，model 填 provider/model）。',
+        peerArchWarn: '⚠ 三个 peer 至少两个选不同架构（如一个 GLM、一个 DeepSeek）。全选同一架构 = 单模型自评，融合无意义。',
+        peerConfigSaveHint: '保存后写入 ~/.pi/eto-config.json，下次会诊生效。留空 = 用内置默认（researcher/coder 走 Ollama，auditor 走云端）。',
         includeFullResult: '默认附完整 JSON 结果',
         envPassthrough: '透传环境变量（逗号分隔）',
         pathsHint: '路径支持 ~；留空使用默认值（$DSH_ETO_REPO 或 ~/src/eto）。',
@@ -166,7 +170,11 @@ window.__ModuleLoader__.load({
         model: 'model',
         peerScoreTimeout: 'Scoring timeout (ms)',
         delegateModel: 'Direct-answer delegate',
-        delegateHint: 'Direct-routed turns are answered by this provider/model (default deepseek-official/deepseek-flash).',
+        delegateHint: 'Direct-routed turns are answered by this provider/model (comma-separated fallback chain supported).',
+        peerConfigTitle: 'Consultation peers (heterogeneous fusion)',
+        peerConfigHint: 'The three peers must be different architectures, otherwise voting degrades to single-model self-consistency. provider: ollama (direct HTTP) or dsh (via host llm service; model = provider/model).',
+        peerArchWarn: '⚠ At least two peers should use different architectures. All-same = single-model self-evaluation, fusion is meaningless.',
+        peerConfigSaveHint: 'Saved into ~/.pi/eto-config.json, effective on the next consultation. Empty = built-in defaults.',
         includeFullResult: 'Always append the full JSON result',
         envPassthrough: 'Pass-through env names (comma separated)',
         pathsHint: 'Paths accept ~; empty means the default ($DSH_ETO_REPO or ~/src/eto).',
@@ -689,7 +697,7 @@ window.__ModuleLoader__.load({
         setMessage(null)
         try {
           const ops = []
-          const scalar = ['repo', 'venv', 'python', 'peerScoreProvider', 'peerScoreModel', 'toolTimeoutMs', 'peerScoreTimeoutMs', 'delegateModel']
+          const scalar = ['repo', 'venv', 'python', 'peerScoreProvider', 'peerScoreModel', 'toolTimeoutMs', 'peerScoreTimeoutMs', 'delegateModel', 'peerConfigJson']
           for (const key of scalar) {
             const next = draft[key]
             const before = value ? value[key] : undefined
@@ -712,8 +720,26 @@ window.__ModuleLoader__.load({
             return
           }
           const accepted = await form.mutate(ops)
-          setState(accepted ? 'saved' : 'failed')
-          if (!accepted) setMessage(t.saveFailed)
+          if (!accepted) { setState('failed'); setMessage(t.saveFailed); return }
+
+          // The consultation peers are not volatile DSH settings — vote.py reads them from
+          // ~/.pi/eto-config.json. Mirror the JSON there whenever it changed, then the next
+          // consultation picks it up without a restart (runner is spawned fresh each time).
+          try {
+            const nextPeer = String(draft.peerConfigJson ?? '').trim()
+            const beforePeer = JSON.stringify(JSON.parse(value ? (value.peerConfigJson ?? '{}') : '{}'))
+            if (nextPeer !== beforePeer && nextPeer !== '') {
+              JSON.parse(nextPeer) // must be valid JSON before we commit it to disk
+              await fetch(API + '/peer-config', {
+                method: 'POST', headers: HEADERS, cache: 'no-store',
+                body: JSON.stringify({ peers: JSON.parse(nextPeer) }),
+              })
+            }
+          } catch (peerError) {
+            setMessage('peer 配置未写入：' + (peerError instanceof Error ? peerError.message : String(peerError)))
+          }
+
+          setState('saved')
         } catch (reason) {
           setState('failed')
           setMessage(reason instanceof Error ? reason.message : String(reason))
@@ -788,7 +814,43 @@ window.__ModuleLoader__.load({
           h('div', { style: styles.card },
             h('div', { style: styles.cardTitle }, t.delegateModel),
             h(Field, { label: t.delegateModel }, h(Input, { value: draft.delegateModel, onChange: set('delegateModel'), placeholder: 'deepseek-official/deepseek-flash' })),
-            h('div', { style: styles.muted }, t.delegateHint),
+            h('div', { style: { ...styles.muted } }, t.delegateHint),
+            h('div', { style: { height: '14px' } }),
+            h('div', { style: { ...styles.cardTitle, marginTop: '6px' } }, t.peerConfigTitle),
+            h('div', { style: { ...styles.muted, marginBottom: '8px' } }, t.peerConfigHint),
+            ['researcher', 'coder', 'auditor'].map((role) => {
+              const stored = (() => {
+                try {
+                  const parsed = JSON.parse(draft.peerConfigJson || '{}')
+                  return parsed[role] || {}
+                } catch { return {} }
+              })()
+              return h('div', { key: role, style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap' } },
+                h('span', { style: { ...styles.muted, width: '86px', fontSize: '12px', fontWeight: 600 } }, role),
+                h('select', {
+                  value: stored.provider || '',
+                  onChange: (ev) => {
+                    const cfg = (() => { try { return JSON.parse(draft.peerConfigJson || '{}') } catch { return {} } })()
+                    cfg[role] = { ...(cfg[role] || {}), provider: ev.target.value, model: (cfg[role] || {}).model || '' }
+                    set('peerConfigJson')(JSON.stringify(cfg, null, 2))
+                  },
+                  style: { ...styles.input, width: '150px' },
+                },
+                  h('option', { value: '' }, '— 默认 —'),
+                  ['ollama', 'dsh'].map(pid => h('option', { value: pid }, pid))),
+                h(Input, {
+                  value: stored.model || '',
+                  onChange: (ev) => {
+                    const cfg = (() => { try { return JSON.parse(draft.peerConfigJson || '{}') } catch { return {} } })()
+                    cfg[role] = { ...(cfg[role] || {}), provider: stored.provider || 'ollama', model: ev.target.value }
+                    set('peerConfigJson')(JSON.stringify(cfg, null, 2))
+                  },
+                  placeholder: role === 'auditor' ? 'deepseek-official/deepseek-flash' : 'gemma3:4b',
+                  style: { flex: '1', minWidth: '180px' },
+                }))
+            }),
+            h('div', { style: { ...styles.warn, fontSize: '11px' } }, t.peerArchWarn),
+            h('div', { style: { ...styles.muted, fontSize: '11px' } }, t.peerConfigSaveHint),
             h('div', { style: styles.checkGrid },
               h('label', { style: styles.check },
                 h('input', { type: 'checkbox', checked: Boolean(draft.includeFullResult), onChange: () => set('includeFullResult')(!draft.includeFullResult) }),
