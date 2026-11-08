@@ -25,8 +25,11 @@ PEER_SYSTEM_PROMPTS = {
 #: 架构差异越大效果越好 —— 本地 Qwen 密集 × 云端 GLM MoE × 云端 DeepSeek 系。
 #: `dsh` 是虚拟供应商：经插件端点回落到 DSH 宿主的 llm 服务，模型串是 `provider/model`。
 #: 覆盖方式：~/.pi/eto-config.json 的 {"peers": {"coder": {"provider": "...", "model": "..."}}}
-#: 局域网里那台 8GB 显存的机器，跑 35B-A3B 的 MoE。用 IP 不用主机名，避免 mDNS 差异。
-OLLAMA_REMOTE = os.environ.get("ETO_OLLAMA_REMOTE", "http://192.168.10.4:11434")
+#: 局域网里那台 8GB 显存的机器（跑 35B-A3B MoE）。
+#:
+#: **默认留空**，不硬编码 IP：这个文件也会在 CI runner 和别人的机器上跑，那里没有这台机器，
+#: 写死地址会让调用一直等到超时（实测 CI 卡 15 分钟）。设 ETO_OLLAMA_REMOTE 才启用远端 peer。
+OLLAMA_REMOTE = os.environ.get("ETO_OLLAMA_REMOTE", "")
 
 #: 三个 peer 必须是**不同架构**，否则投票只是单模型自一致性（见
 #: docs/eto-work-usable-2026-11.md 引的算力归一化实验）。
@@ -36,6 +39,7 @@ OLLAMA_REMOTE = os.environ.get("ETO_OLLAMA_REMOTE", "http://192.168.10.4:11434")
 #: 之前「所有 peer 无响应」的真正原因就是它，不是服务故障。
 DEFAULT_PEER_CONFIG = {
     # gemma3:4b：85 tok/s，无 thinking 干扰，最稳的快速视角。
+    # host 为空 = 走本机 OLLAMA_URL；设了 ETO_OLLAMA_REMOTE 才指向局域网那台 8GB 机器。
     "researcher": {"provider": "ollama", "model": "gemma3:4b", "host": OLLAMA_REMOTE},
     # 35B-A3B MoE：稀疏激活，是真正的第三个架构，且不烧云端额度。
     "coder": {"provider": "ollama", "model": "qwen3.6-35b-a3b:8g",
