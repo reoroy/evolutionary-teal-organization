@@ -112,7 +112,7 @@ def _call_dsh(model: str, system: str, prompt: str) -> str:
         # 这一回落**必须留痕**：返回值前缀标记，_score_single 会把 provider 记成
         # ollama(fallback)，台账里就能看出这一轮没做成多架构融合。
         logger.warning("dsh 端点缺失，peer=%s 回落本机模型 %s（本轮未融合）", _MCP_CURRENT_PEER, MODEL)
-        return _FALLBACK_MARK + _call_ollama(MODEL, f"{system}\n\n{prompt}" if system else prompt)
+        return _FALLBACK_MARK + _call_arbiter(f"{system}\n\n{prompt}" if system else prompt)
     provider, _, model_id = model.partition("/")
     if not model_id:
         return _provider_error("dsh", model, f"model 必须形如 provider/model，收到 {model!r}")
@@ -427,6 +427,27 @@ SYNTHESIS_PROMPT = (
 )
 
 
+
+def _arbiter() -> tuple[str, str, str, bool]:
+    """(provider, model, host, think) for the synthesis/arbiter step.
+
+    The panel lets the operator pick the arbiter's provider+model; hardcoding a model here is what
+    made a saved peer configuration look ignored — the peers switched but the synthesis call kept
+    going to the old local tag (which this machine no longer serves).
+    """
+    cfg = _load_peer_config().get("终审仲裁者") or {}
+    provider = str(cfg.get("provider") or "ollama")
+    model = str(cfg.get("model") or MODEL)
+    host = str(cfg.get("host") or "")
+    return provider, model, host, bool(cfg.get("think"))
+
+
+def _call_arbiter(prompt: str) -> str:
+    provider, model, host, think = _arbiter()
+    if provider == "dsh":
+        return _call_dsh(model, "", prompt)
+    return _call_ollama(model, prompt, host=host, think=think)
+
 def _synthesize(plan: str, votes: list) -> str | None:
     """把多个 peer 的意见融合成一段结论（MoA 的聚合器角色，走本机模型，免费）。
 
@@ -440,7 +461,7 @@ def _synthesize(plan: str, votes: list) -> str | None:
         lines.append(f"[{v['peer']} score={v['score']}] concern: {v.get('concern', '')} | suggestion: {v.get('suggestion', '')}")
     prompt = SYNTHESIS_PROMPT + "\n\n计划:\n" + plan[:1200] + "\n\n各方意见:\n" + "\n".join(lines)
     try:
-        raw = _call_ollama(MODEL, prompt)
+        raw = _call_arbiter(prompt)
     except Exception as e:
         logger.warning("融合聚合失败（保留各 peer 原文）: %s: %s", type(e).__name__, e)
         return None
@@ -620,7 +641,7 @@ def _synthesize_advise(plan: str, votes: list) -> str:
         lines.append(f"[{v['peer']}] 建议: {v.get('advice','')} | 风险: {v.get('risk','')} | 分歧: {v.get('disagreement','')}")
     prompt = ADVISE_SYNTHESIS_PROMPT + "\n\n方案:\n" + plan[:1200] + "\n\n各方建议:\n" + "\n".join(lines)
     try:
-        raw = _call_ollama(MODEL, prompt)
+        raw = _call_arbiter(prompt)
     except Exception as e:
         logger.warning("会诊聚合失败（保留各 peer 原文）: %s: %s", type(e).__name__, e)
         return ""
