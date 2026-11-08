@@ -33,6 +33,13 @@ export const Config = z.object({
   peerScoreTimeoutMs: z.number().min(5_000).max(600_000).default(90_000).volatile(),
   /** `provider/model` route the direct-answer delegate uses (routing gate A). */
   delegateModel: z.string().default('deepseek-official/deepseek-flash').volatile(),
+  /**
+   * The three consultation peers as JSON, keyed by role. Empty = vote.py's built-in defaults.
+   * Shape: { researcher: {provider, model, host?, think?}, coder: {...}, auditor: {...} }
+   * `provider` is `ollama` (direct HTTP, honours `host`) or `dsh` (via the host llm service,
+   * model is `provider/model`). Written through by the panel into ~/.pi/eto-config.json.
+   */
+  peerConfigJson: z.string().default('').volatile(),
   /** Always append the full consensus JSON to the fused reply (else only on request). */
   includeFullResult: z.boolean().default(false).volatile(),
   /** Environment names forwarded to the child, beyond the non-secret baseline. */

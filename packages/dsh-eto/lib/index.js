@@ -20,7 +20,7 @@
  * locatable errors, the routes report the problem as data, and the plugin still
  * loads.
  */
-import { existsSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { Config, resolveSettings, settingsView } from './config.js'
 import { ETO_PROVIDER, EtoAdapter } from './provider.js'
 import { listReviews, readReview } from './reviews.js'
@@ -470,6 +470,42 @@ export function apply(ctx, entryConfig) {
           // first; the detail route answers by the record's own ledger id.
           if (sub === '/reviews' && req.method === 'GET') {
             json(res, 200, { reviews: listReviews() })
+            return
+          }
+
+          if (sub === '/peer-config' && req.method === 'POST') {
+            const chunks = []
+            for await (const chunk of req) chunks.push(chunk)
+            let body = {}
+            try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { /* below */ }
+            const peers = body.peers
+            if (!peers || typeof peers !== 'object' || Array.isArray(peers)) {
+              json(res, 400, { _error: true, error: 'peers must be an object keyed by role' })
+              return
+            }
+            // Sanitize: only the known roles, and only the fields vote.py consumes.
+            const allowed = new Set(['researcher', 'coder', 'auditor', '终审仲裁者'])
+            const clean = {}
+            for (const [role, cfg] of Object.entries(peers)) {
+              if (!allowed.has(role) || !cfg || typeof cfg !== 'object') continue
+              clean[role] = {}
+              for (const key of ['provider', 'model', 'host', 'think']) {
+                if (cfg[key] !== undefined) clean[role][key] = cfg[key]
+              }
+            }
+            try {
+              const { mkdirSync, writeFileSync } = await import('node:fs')
+              const { homedir } = await import('node:os')
+              const dir = join(homedir(), '.pi')
+              mkdirSync(dir, { recursive: true })
+              const file = join(dir, 'eto-config.json')
+              let existing = {}
+              try { existing = JSON.parse(readFileSync(file, 'utf8')) } catch { /* fresh */ }
+              writeFileSync(file, JSON.stringify({ ...existing, peers: { ...existing.peers, ...clean } }, null, 2), 'utf8')
+              json(res, 200, { ok: true, peers: clean, file })
+            } catch (error) {
+              json(res, 500, { _error: true, error: error instanceof Error ? error.message : String(error) })
+            }
             return
           }
           if (sub.startsWith('/reviews/') && req.method === 'GET') {
