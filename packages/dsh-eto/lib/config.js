@@ -119,6 +119,10 @@ export function resolveSettings(raw, options = {}) {
     peerScoreModel: str(value.peerScoreModel, ''),
     peerScoreTimeoutMs: num(value.peerScoreTimeoutMs, 90_000),
     delegateModel: str(value.delegateModel, 'deepseek-official/deepseek-flash'),
+    // Both are volatile settings. Without them here, a saved value is dropped on resolve and
+    // the panel reads back the empty default — the "selection doesn't stick" symptom.
+    peerConfigJson: str(value.peerConfigJson, ''),
+    ollamaRemote: str(value.ollamaRemote, ''),
     includeFullResult: bool(value.includeFullResult, false),
     envPassthrough: list(value.envPassthrough),
   }
@@ -136,6 +140,10 @@ export function settingsView(settings) {
     peerScoreModel: settings.peerScoreModel,
     peerScoreTimeoutMs: settings.peerScoreTimeoutMs,
     delegateModel: settings.delegateModel,
+    // These two must appear in the view or the configForms snapshot never carries them:
+    // the settings page then drafts them as undefined and every peer choice snaps back to default.
+    peerConfigJson: settings.peerConfigJson,
+    ollamaRemote: settings.ollamaRemote,
     includeFullResult: settings.includeFullResult,
     envPassthrough: settings.envPassthrough,
   }
