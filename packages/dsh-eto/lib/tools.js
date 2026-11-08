@@ -165,7 +165,10 @@ export function createTools({ ctx, settings }) {
     const base = childEnv(snapshot, process.env)
     // The peers travel as ONE structured JSON env var, produced by the settings schema rather
     // than by a hand-maintained file: whatever the panel saved is exactly what vote.py receives.
-    const peers = Array.isArray(snapshot.peers) ? snapshot.peers : []
+    // Only complete rows travel to vote.py; a row kept in settings so the editor can show a
+    // half-filled choice must not become a peer that would be called with an empty model.
+    const peers = (Array.isArray(snapshot.peers) ? snapshot.peers : [])
+      .filter(entry => entry && entry.provider && entry.model)
     if (peers.length > 0) base.ETO_PEERS_JSON = JSON.stringify(peers)
     if (snapshot.ollamaRemote) base.ETO_OLLAMA_REMOTE = snapshot.ollamaRemote
     return dshEndpoint ? { ...base, ETO_DSH_ENDPOINT: dshEndpoint } : base

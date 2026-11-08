@@ -114,7 +114,10 @@ export function normalizePeers(candidate) {
     if (!PEER_ROLES.includes(role) || seen.has(role)) continue
     const provider = String(entry.provider ?? '').trim()
     const model = String(entry.model ?? '').trim()
-    if (provider === '' || model === '') continue
+    // Only drop a row when the operator cleared the provider (meaning "use the built-in default").
+    // An empty model must SURVIVE: the editor writes provider first and the model second, and
+    // dropping the half-filled row is what made a provider selection snap back to "default".
+    if (provider === '') continue
     seen.add(role)
     out.push({ role, provider, model, host: String(entry.host ?? '').trim() })
   }

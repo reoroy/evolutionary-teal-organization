@@ -718,9 +718,9 @@ window.__ModuleLoader__.load({
         const current = Array.isArray(draftNow.peers) ? draftNow.peers : []
         const rest = current.filter(e => e && e.role !== role)
         const entry = { role, provider: '', model: '', host: '', ...next }
-        const merged = entry.provider === '' || entry.model === ''
-          ? rest
-          : [...rest, entry]
+        // Keep a half-filled row (provider picked, model not yet). Dropping it here is what made
+        // the selection visibly revert to "built-in default" the moment a provider was chosen.
+        const merged = entry.provider === '' ? rest : [...rest, entry]
         const order = ['researcher', 'coder', 'auditor']
         merged.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role))
         setField('peers')(merged)
@@ -893,15 +893,24 @@ window.__ModuleLoader__.load({
 
               // Selecting a provider keeps the model the operator already had for that provider,
               // so switching provider does not blank the row and drop it from the saved array.
+              /** First model a provider offers, so choosing a provider never leaves the row blank. */
+              const firstModelOf = (providerId) => {
+                const hit = (catalog || []).find(g => g.id === providerId)
+                const list = (hit && hit.models) || []
+                return list.length > 0 ? list[0].id : ''
+              }
               const onProvider = (raw) => {
                 if (raw === '') { writePeer(role, { provider: '', model: '' }, draft, set); return }
                 if (raw.startsWith('ollama|')) {
                   const host = raw.slice('ollama|'.length)
                   const keep = isOllama ? fullModel : ''
-                  writePeer(role, { provider: 'ollama', model: keep, host }, draft, set)
+                  const group = (catalog || []).find(g => g.isOllama && (g.host || '') === host)
+                  const fallback = (group && group.models && group.models[0] && group.models[0].id) || ''
+                  writePeer(role, { provider: 'ollama', model: keep || fallback, host }, draft, set)
                 } else {
                   const keep = isDsh && dshProvider === raw ? dshModel : ''
-                  writePeer(role, { provider: 'dsh', model: keep ? `${raw}/${keep}` : '', host: '' }, draft, set)
+                  const fallback = firstModelOf(raw)
+                  writePeer(role, { provider: 'dsh', model: `${raw}/${keep || fallback}`, host: '' }, draft, set)
                 }
               }
               const onModel = (modelId) => {
