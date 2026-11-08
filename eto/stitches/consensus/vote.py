@@ -45,7 +45,9 @@ DEFAULT_PEER_CONFIG = {
     "coder": {"provider": "ollama", "model": "qwen3.6-35b-a3b:8g",
               "host": OLLAMA_REMOTE, "think": False},
     # 云端智谱 GLM：额度可用时提供第四个异构源；不可用时如实标 degraded，不假装成功。
-    "auditor": {"provider": "dsh", "model": "qodercn/gfmodel"},
+    # 云端 DeepSeek flash：充值后已恢复，便宜快，第四个独立架构。
+    # 备用：qodercn/gfmodel（DeepSeek 额度耗尽时切回）。
+    "auditor": {"provider": "dsh", "model": "deepseek-official/deepseek-flash"},
     "终审仲裁者": {"provider": "ollama", "model": "gemma3:4b", "host": OLLAMA_REMOTE},
 }
 
@@ -169,21 +171,36 @@ def _call_ollama(model: str, full_prompt: str, host: str = "", think: bool = Fal
     总参 34.7B、每 token 只激活 3B，实测 41 tok/s，且不烧云端额度。
     """
     base = (host or OLLAMA_URL).rstrip("/")
-    body = {
-        "model": model,
-        "messages": [{"role": "user", "content": full_prompt}],
-        "stream": False,
-        "think": bool(think),
-        "options": {"temperature": 0.7, "num_predict": 1600},
-    }
-    data = json.dumps(body).encode("utf-8")
-    # 远端 35B MoE 首包要十几秒，30s 不够。
-    req = urllib.request.Request(f"{base}/api/chat", data=data,
-        headers={"Content-Type": "application/json"}, method="POST")
-    try:
+
+    def ask(use_think: bool, budget: int) -> tuple[str, int]:
+        """一次调用，返回 (正文, thinking 字数)。
+
+        `/api/chat` 把 thinking 与 content 分在两个字段，所以「开着 think 又不污染正文」
+        本来就不需要清洗——只要不把 thinking 拼进返回值。
+        """
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": full_prompt}],
+            "stream": False,
+            "think": bool(use_think),
+            "options": {"temperature": 0.7, "num_predict": budget},
+        }
+        req = urllib.request.Request(f"{base}/api/chat", data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=180) as resp:
             message = (json.loads(resp.read().decode("utf-8")) or {}).get("message") or {}
-            text = (message.get("content") or "").strip()
+        return (message.get("content") or "").strip(), len(message.get("thinking") or "")
+
+    try:
+        text, thought = ask(think, 1600)
+        # 开着 think 时正文可能因预算被思考吃光而为空。**自动补救**而不是直接判失败：
+        # thinking 长度事先不可知，先把预算翻倍；仍空才降级为关 think。
+        if text == "" and think:
+            text, thought = ask(True, 4000)
+        if text == "" and think:
+            logger.warning("ollama peer=%s model=%s 开 think 两次均无正文（thinking=%d 字），改关 think 重试",
+                           _MCP_CURRENT_PEER, model, thought)
+            text, thought = ask(False, 1600)
         if text == "":
             return _provider_error("ollama", model, "模型返回空文本（预算可能全被 thinking 吃掉）")
         return text
