@@ -26,6 +26,7 @@ import { ETO_PROVIDER, EtoAdapter } from './provider.js'
 import { listReviews, readReview } from './reviews.js'
 import { runTool } from './spawn.js'
 import { TOOL_NAMES, createTools, runConsensus, scorePeerText, callLlmRaw } from './tools.js'
+import { join } from 'node:path'
 
 /** Peers a panel review asks, in the order ETO itself uses for T1. */
 const REVIEW_PEERS = ['researcher', 'coder', 'auditor']
