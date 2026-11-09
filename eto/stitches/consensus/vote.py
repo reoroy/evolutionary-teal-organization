@@ -157,29 +157,43 @@ def _call_dsh(model: str, system: str, prompt: str) -> str:
     provider, _, model_id = model.partition("/")
     if not model_id:
         return _provider_error("dsh", model, f"model 必须形如 provider/model，收到 {model!r}")
-    body = json.dumps({
-        "provider": provider,
-        "model": model_id,
-        "system": system,
-        "prompt": prompt,
-        "maxTokens": 800,
-        "timeoutMs": 120_000,
-    }).encode("utf-8")
-    req = urllib.request.Request(endpoint + "/llm", data=body, method="POST",
-                                 headers={"Content-Type": "application/json", "x-dsh-eto": "1"})
-    try:
+    def ask(max_tokens: int):
+        body = json.dumps({
+            "provider": provider,
+            "model": model_id,
+            "system": system,
+            "prompt": prompt,
+            # 800 对带 reasoning 的模型偏低：实测 loomy/GLM-5.3-Flash 会把预算全花在思考上、
+            # 正文为空。先用 2400 起步，空了再翻倍重试一次（思考长度事先不可知）。
+            "maxTokens": max_tokens,
+            "timeoutMs": 120_000,
+        }).encode("utf-8")
+        req = urllib.request.Request(endpoint + "/llm", data=body, method="POST",
+                                     headers={"Content-Type": "application/json", "x-dsh-eto": "1"})
         with urllib.request.urlopen(req, timeout=130) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        logger.error("dsh 调用失败 peer=%s model=%s: %s: %s", _MCP_CURRENT_PEER, model, type(e).__name__, e)
-        return _provider_error("dsh", model, f"{type(e).__name__}: {e}")
-    if payload.get("_error"):
-        logger.error("dsh 端点报错 peer=%s model=%s: %s", _MCP_CURRENT_PEER, model, payload.get("error"))
-        return _provider_error("dsh", model, str(payload.get("error"))[:200])
-    text = str(payload.get("_text") or "").strip()
-    if text == "":
-        return _provider_error("dsh", model, "宿主返回空文本")
-    return text
+            return json.loads(resp.read().decode("utf-8"))
+
+    last_error = ""
+    text = ""
+    # 两档预算：先 2400，失败（空文本 / 端点报错 / 传输错误）再给一次 6000。
+    # 带 reasoning 的模型（loomy/GLM-5.3-Flash 实测）会把预算吃在思考上，
+    # 而一次 502 也可能只是那一档太小，不该直接判 peer 掉队。
+    for budget in (2400, 6000):
+        try:
+            payload = ask(budget)
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            logger.warning("dsh 调用失败（预算 %s）peer=%s model=%s: %s", budget, _MCP_CURRENT_PEER, model, last_error)
+            continue
+        if payload.get("_error"):
+            last_error = str(payload.get("error"))[:200]
+            logger.warning("dsh 端点报错（预算 %s）peer=%s model=%s: %s", budget, _MCP_CURRENT_PEER, model, last_error)
+            continue
+        text = str(payload.get("_text") or "").strip()
+        if text:
+            return text
+        last_error = "宿主返回空文本"
+    return _provider_error("dsh", model, last_error or "宿主返回空文本")
 
 
 def _call_provider(provider: str, model: str, system: str, prompt: str, cfg: dict | None = None) -> str:
