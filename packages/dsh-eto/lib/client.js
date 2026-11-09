@@ -784,7 +784,7 @@ window.__ModuleLoader__.load({
             if (!accepted) { setState('failed'); setMessage(t.saveFailed); return }
           }
           setState('saved')
-          setMessage(peerError === null ? null : ('peer 配置未写入：' + (peerError instanceof Error ? peerError.message : String(peerError))))
+          setMessage(null)
         } catch (reason) {
           setState('failed')
           setMessage(reason instanceof Error ? reason.message : String(reason))
